@@ -41,6 +41,26 @@ class User(UserMixin, TimestampMixin, db.Model):
     files = db.relationship("File", back_populates="owner", lazy="select")
     activity_logs = db.relationship("ActivityLog", back_populates="user", lazy="select")
     sessions = db.relationship("UserSession", back_populates="user", lazy="select")
+    shared_drives_owned = db.relationship(
+        "SharedDrive",
+        foreign_keys="SharedDrive.owner_id",
+        back_populates="owner",
+        lazy="select",
+    )
+    shared_drive_memberships = db.relationship(
+        "SharedDriveMember",
+        foreign_keys="SharedDriveMember.user_id",
+        back_populates="user",
+        lazy="select",
+        cascade="all, delete-orphan",
+    )
+    shared_drive_requests = db.relationship(
+        "SharedDriveJoinRequest",
+        foreign_keys="SharedDriveJoinRequest.user_id",
+        back_populates="user",
+        lazy="select",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def is_admin(self) -> bool:
@@ -70,10 +90,12 @@ class Folder(TimestampMixin, db.Model):
     name = db.Column(db.String(120), nullable=False)
     parent_id = db.Column(db.Integer, db.ForeignKey("folder.id"), nullable=True, index=True)
     owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    shared_drive_id = db.Column(db.Integer, db.ForeignKey("shared_drive.id"), nullable=True, index=True)
     is_root = db.Column(db.Boolean, nullable=False, default=False)
     deleted_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     owner = db.relationship("User", back_populates="folders")
+    shared_drive = db.relationship("SharedDrive", back_populates="folders")
     parent = db.relationship("Folder", remote_side=[id], back_populates="children")
     children = db.relationship("Folder", back_populates="parent", lazy="select")
     files = db.relationship("File", back_populates="folder", lazy="select")
@@ -83,6 +105,7 @@ class File(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     folder_id = db.Column(db.Integer, db.ForeignKey("folder.id"), nullable=False, index=True)
     owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    shared_drive_id = db.Column(db.Integer, db.ForeignKey("shared_drive.id"), nullable=True, index=True)
     filename = db.Column(db.String(255), nullable=False, index=True)
     original_filename = db.Column(db.String(255), nullable=False)
     mime_type = db.Column(db.String(255), nullable=False, default="application/octet-stream")
@@ -99,6 +122,7 @@ class File(TimestampMixin, db.Model):
 
     folder = db.relationship("Folder", back_populates="files")
     owner = db.relationship("User", back_populates="files")
+    shared_drive = db.relationship("SharedDrive", back_populates="files")
     chunks = db.relationship(
         "FileChunk",
         back_populates="file",
@@ -171,6 +195,87 @@ class ShareLink(db.Model):
     @property
     def is_expired(self) -> bool:
         return self.expires_at is not None and self.expires_at <= utcnow()
+
+
+class SharedDrive(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.String(255), nullable=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    visibility = db.Column(db.String(24), nullable=False, default="invite_only", index=True)
+    storage_quota_bytes = db.Column(db.BigInteger, nullable=False, default=0)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+
+    owner = db.relationship("User", foreign_keys=[owner_id], back_populates="shared_drives_owned")
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+    folders = db.relationship("Folder", back_populates="shared_drive", lazy="select")
+    files = db.relationship("File", back_populates="shared_drive", lazy="select")
+    memberships = db.relationship(
+        "SharedDriveMember",
+        back_populates="shared_drive",
+        lazy="select",
+        cascade="all, delete-orphan",
+    )
+    join_requests = db.relationship(
+        "SharedDriveJoinRequest",
+        back_populates="shared_drive",
+        lazy="select",
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def is_invite_only(self) -> bool:
+        return self.visibility == "invite_only"
+
+    @property
+    def allows_join_requests(self) -> bool:
+        return self.visibility == "request_access"
+
+    @property
+    def is_public(self) -> bool:
+        return self.visibility == "public"
+
+
+class SharedDriveMember(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    shared_drive_id = db.Column(db.Integer, db.ForeignKey("shared_drive.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    role = db.Column(db.String(24), nullable=False, default="viewer", index=True)
+    invited_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+
+    shared_drive = db.relationship("SharedDrive", back_populates="memberships")
+    user = db.relationship("User", foreign_keys=[user_id], back_populates="shared_drive_memberships")
+    invited_by = db.relationship("User", foreign_keys=[invited_by_id])
+
+    __table_args__ = (
+        db.UniqueConstraint("shared_drive_id", "user_id", name="uq_shared_drive_member"),
+    )
+
+    @property
+    def is_owner(self) -> bool:
+        return self.role == "owner"
+
+    @property
+    def can_manage(self) -> bool:
+        return self.role == "owner"
+
+    @property
+    def can_write(self) -> bool:
+        return self.role in {"owner", "editor"}
+
+
+class SharedDriveJoinRequest(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    shared_drive_id = db.Column(db.Integer, db.ForeignKey("shared_drive.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    status = db.Column(db.String(24), nullable=False, default="pending", index=True)
+    resolved_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    resolved_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+
+    shared_drive = db.relationship("SharedDrive", back_populates="join_requests")
+    user = db.relationship("User", foreign_keys=[user_id], back_populates="shared_drive_requests")
+    resolved_by = db.relationship("User", foreign_keys=[resolved_by_id])
 
 
 class ActivityLog(db.Model):

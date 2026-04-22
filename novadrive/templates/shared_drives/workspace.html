@@ -1,0 +1,376 @@
+{% extends "base.html" %}
+{% block title %}{{ current_shared_drive.name }} - Shared Drive{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <section class="grid gap-4 xl:grid-cols-[1.3fr,0.85fr,0.85fr]">
+    <div class="nova-panel p-6">
+      <div class="flex flex-wrap items-center gap-3 text-sm text-slate-400">
+        <a href="{{ url_for('shared_drives.index') }}" class="transition hover:text-white">Shared Drives</a>
+        <span>/</span>
+        {% for crumb in breadcrumbs %}
+          <a href="{{ url_for('shared_drives.workspace', drive_id=current_shared_drive.id, folder_id=crumb.id) }}" class="transition hover:text-white">{{ crumb.name }}</a>
+          {% if not loop.last %}<span>/</span>{% endif %}
+        {% endfor %}
+      </div>
+      <div class="mt-6 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Shared Workspace</p>
+          <h2 class="mt-3 text-3xl font-semibold tracking-tight text-white">{{ current_shared_drive.name }}</h2>
+          <p class="mt-3 max-w-2xl text-sm leading-7 text-slate-400">{{ current_shared_drive.description or "Team-owned workspace with shared folders, shared quota, and controlled membership." }}</p>
+        </div>
+        <div class="flex gap-3">
+          {% if can_write_to_workspace %}
+            <a href="#upload-zone" class="nova-button-secondary">Upload Files</a>
+            <a href="#new-folder" class="nova-button-primary">New Folder</a>
+          {% else %}
+            <span class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-300">Read-only view</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="nova-panel p-6">
+      <div class="flex items-start justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Usage</p>
+          <h3 class="mt-3 text-3xl font-semibold text-white">{{ usage.total_used|filesize }}</h3>
+          <p class="mt-2 text-sm text-slate-400">
+            {{ usage.total_files }} active files
+            {% if usage.is_unlimited %}
+              · Unlimited storage
+            {% else %}
+              · {{ usage.remaining_bytes|filesize }} remaining
+            {% endif %}
+          </p>
+        </div>
+        <div class="relative flex h-20 w-20 items-center justify-center rounded-full border border-fuchsia-400/20 bg-fuchsia-500/10">
+          <div class="absolute inset-2 rounded-full border border-white/10"></div>
+          <span class="text-sm font-semibold text-fuchsia-100">
+            {% if usage.is_unlimited %}
+              inf
+            {% else %}
+              {{ usage.percent_used }}%
+            {% endif %}
+          </span>
+        </div>
+      </div>
+      <div class="mt-6 h-3 rounded-full bg-white/10">
+        <div class="h-3 rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500" style="width: {{ 100 if usage.is_unlimited else usage.percent_used }}%"></div>
+      </div>
+      <p class="mt-3 text-xs leading-6 text-slate-500">
+        {% if usage.is_unlimited %}
+          This shared drive is not capped by a storage quota.
+        {% else %}
+          Shared drive quota: {{ usage.quota_bytes|filesize }}
+        {% endif %}
+      </p>
+    </div>
+
+    <div class="nova-panel p-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Access</p>
+          <h3 class="mt-3 text-xl font-semibold text-white">Visibility and role</h3>
+        </div>
+        <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">{{ current_shared_drive.visibility.replace('_', ' ') }}</span>
+      </div>
+      <div class="mt-5 space-y-3 text-sm text-slate-300">
+        <p>Owner: <span class="text-white">{{ current_shared_drive.owner.username }}</span></p>
+        <p>Your access:
+          <span class="text-white">
+            {% if shared_drive_member %}
+              {{ shared_drive_member.role|title }}
+            {% elif current_user.is_admin %}
+              Admin override
+            {% else %}
+              Public viewer
+            {% endif %}
+          </span>
+        </p>
+        <p>{{ "You can manage members and settings for this shared drive." if can_manage_shared_drive else ("You can upload and edit files in this shared drive." if can_write_to_workspace else "You can browse and download files, but this shared drive is read-only for your account.") }}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid gap-6 2xl:grid-cols-[1.35fr,0.75fr]">
+    <div class="space-y-6">
+      <div class="nova-panel p-5">
+        <form method="get" class="grid gap-4 xl:grid-cols-[1.3fr,0.7fr,0.55fr,auto]">
+          <input type="hidden" name="folder_id" value="{{ current_folder.id }}">
+          <div>
+            <label class="mb-2 block text-xs uppercase tracking-[0.22em] text-slate-500">Search</label>
+            <input type="text" name="q" value="{{ query }}" placeholder="Search files or folders" class="nova-input">
+          </div>
+          <div>
+            <label class="mb-2 block text-xs uppercase tracking-[0.22em] text-slate-500">Scope</label>
+            <select name="scope" class="nova-input">
+              <option value="current" {% if scope == 'current' %}selected{% endif %}>Current folder</option>
+              <option value="global" {% if scope == 'global' %}selected{% endif %}>Entire shared drive</option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-2 block text-xs uppercase tracking-[0.22em] text-slate-500">Type</label>
+            <select name="type" class="nova-input">
+              <option value="all" {% if type_filter == 'all' %}selected{% endif %}>All</option>
+              <option value="image" {% if type_filter == 'image' %}selected{% endif %}>Images</option>
+              <option value="video" {% if type_filter == 'video' %}selected{% endif %}>Video</option>
+              <option value="audio" {% if type_filter == 'audio' %}selected{% endif %}>Audio</option>
+              <option value="document" {% if type_filter == 'document' %}selected{% endif %}>Documents</option>
+            </select>
+          </div>
+          <div class="flex items-end gap-3">
+            <button type="submit" class="nova-button-secondary w-full">Apply</button>
+          </div>
+        </form>
+        <div class="mt-4 flex items-center justify-between gap-3">
+          <p class="text-sm text-slate-400">View mode</p>
+          <div class="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-1">
+            <a href="{{ url_for('shared_drives.workspace', drive_id=current_shared_drive.id, folder_id=current_folder.id, q=query, scope=scope, type=type_filter, view='list') }}" class="rounded-xl px-3 py-2 text-sm {% if view_mode == 'list' %}bg-fuchsia-500/15 text-white{% else %}text-slate-400{% endif %}">List</a>
+            <a href="{{ url_for('shared_drives.workspace', drive_id=current_shared_drive.id, folder_id=current_folder.id, q=query, scope=scope, type=type_filter, view='grid') }}" class="rounded-xl px-3 py-2 text-sm {% if view_mode == 'grid' %}bg-fuchsia-500/15 text-white{% else %}text-slate-400{% endif %}">Grid</a>
+          </div>
+        </div>
+      </div>
+
+      <div id="upload-zone" class="nova-panel p-5">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Upload Pipeline</p>
+            <h3 class="mt-2 text-2xl font-semibold text-white">Upload into {{ current_shared_drive.name }}</h3>
+            <p class="mt-2 text-sm text-slate-400">Files written here count against the shared drive storage cap, not the uploader's personal quota.</p>
+            <p class="mt-3 text-xs leading-6 text-slate-500">
+              Max upload request: <span class="text-white">{{ config.MAX_UPLOAD_SIZE_BYTES|filesize }}</span>
+              {% if config.CLOUDFLARE_TUNNEL_COMPAT %}
+                · Cloudflare {{ config.CLOUDFLARE_TUNNEL_PLAN|title }} compatibility mode
+              {% endif %}
+            </p>
+          </div>
+          <div class="hidden rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right text-sm text-slate-400 xl:block">
+            Chunk size<br>
+            <span class="text-base font-semibold text-white">{{ config.DISCORD_CHUNK_SIZE_BYTES|filesize if config is defined else '' }}</span>
+          </div>
+        </div>
+        <form action="{{ url_for('files.upload') }}" method="post" enctype="multipart/form-data" class="mt-5" data-upload-form data-ajax-upload="true" data-max-upload-bytes="{{ config.MAX_UPLOAD_SIZE_BYTES }}" data-max-upload-label="{{ config.MAX_UPLOAD_SIZE_BYTES|filesize }}" data-cloudflare-compat="{{ 'true' if config.CLOUDFLARE_TUNNEL_COMPAT else 'false' }}" data-cloudflare-plan="{{ config.CLOUDFLARE_TUNNEL_PLAN|title }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="folder_id" value="{{ current_folder.id }}">
+          <label class="block cursor-pointer rounded-[28px] border border-dashed border-fuchsia-400/30 bg-gradient-to-br from-fuchsia-500/10 to-violet-500/10 p-8 text-center transition hover:border-fuchsia-300/60 hover:from-fuchsia-500/15 hover:to-violet-500/15 {% if not can_write_to_workspace %}opacity-60{% endif %}" data-upload-dropzone>
+            <input type="file" name="files" multiple class="hidden" data-upload-input {% if not can_write_to_workspace %}disabled{% endif %}>
+            <span class="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl border border-white/10 bg-white/10 text-2xl text-fuchsia-100">+</span>
+            <span class="mt-5 block text-lg font-semibold text-white">Drag and drop files here</span>
+            <span class="mt-2 block text-sm text-slate-300">or click to browse your device</span>
+          </label>
+          <div class="mt-4 hidden overflow-hidden rounded-full bg-white/10" data-upload-progress-shell>
+            <div class="h-2 rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500 transition-all duration-200" style="width: 0%" data-upload-progress></div>
+          </div>
+          <div class="mt-4 flex items-center justify-between gap-4">
+            <p class="text-sm text-slate-400" data-upload-status>{% if can_write_to_workspace %}Select one or more files to begin.{% else %}This shared drive is read-only for your account.{% endif %}</p>
+            <button type="submit" class="nova-button-primary" {% if not usage.can_upload or not can_write_to_workspace %}disabled{% endif %}>Upload to Shared Drive</button>
+          </div>
+          {% if not can_write_to_workspace %}
+            <p class="mt-3 text-sm text-amber-200">Your current access is read-only. Ask the shared drive owner for editor access if you need to upload or modify content.</p>
+          {% elif not usage.can_upload %}
+            <p class="mt-3 text-sm text-amber-200">This shared drive is full. Ask an admin to increase the shared drive storage cap or delete files.</p>
+          {% endif %}
+        </form>
+      </div>
+
+      <div class="nova-panel p-5">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Folders</p>
+            <h3 class="mt-2 text-2xl font-semibold text-white">Current structure</h3>
+          </div>
+          <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">{{ folders|length }}</span>
+        </div>
+        <div class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {% for folder in folders %}
+            <div class="rounded-3xl border border-white/10 bg-white/5 p-5 transition hover:-translate-y-1 hover:border-fuchsia-400/30 hover:bg-white/7">
+              <a href="{{ url_for('shared_drives.workspace', drive_id=current_shared_drive.id, folder_id=folder.id) }}" class="block">
+                <div class="flex items-center justify-between">
+                  <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-xs font-semibold uppercase tracking-[0.24em] text-fuchsia-200">FD</span>
+                  <span class="text-xs text-slate-500">{{ folder.created_at|datetime }}</span>
+                </div>
+                <h4 class="mt-4 text-lg font-semibold text-white">{{ folder.name }}</h4>
+                <p class="mt-2 text-sm text-slate-400">Nested folder inside the shared drive.</p>
+              </a>
+              <div class="mt-5 flex gap-2">
+                <a href="{{ url_for('shared_drives.workspace', drive_id=current_shared_drive.id, folder_id=folder.id) }}" class="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-center text-sm text-slate-200 transition hover:border-fuchsia-400/40 hover:bg-white/10">Open</a>
+                {% if can_write_to_workspace %}
+                  <form action="{{ url_for('folders.delete', folder_id=folder.id) }}" method="post" class="flex-1">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="parent_id" value="{{ current_folder.id }}">
+                    <input type="hidden" name="shared_drive_id" value="{{ current_shared_drive.id }}">
+                    <button type="submit" class="w-full rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-2 text-center text-sm text-rose-100 transition hover:bg-rose-500/20" data-confirm-submit data-confirm-title="Delete {{ folder.name }}?" data-confirm-body="This will remove the folder and its descendants from the shared drive view.">Delete</button>
+                  </form>
+                {% endif %}
+              </div>
+            </div>
+          {% else %}
+            <div class="col-span-full rounded-[28px] border border-dashed border-white/10 bg-white/5 p-10 text-center">
+              <p class="text-lg font-semibold text-white">No subfolders here yet</p>
+              <p class="mt-3 text-sm leading-7 text-slate-400">Create a folder to organize team content more cleanly.</p>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="nova-panel overflow-hidden">
+        <div class="flex items-center justify-between border-b border-white/10 px-5 py-4">
+          <div>
+            <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Files</p>
+            <h3 class="mt-2 text-xl font-semibold text-white">Shared library</h3>
+          </div>
+          <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">{{ files|length }}</span>
+        </div>
+        <div class="p-5">
+          {% if files %}
+            {% if view_mode == "grid" %}
+              {% include "components/file_grid.html" %}
+            {% else %}
+              {% include "components/file_table.html" %}
+            {% endif %}
+          {% else %}
+            <div class="rounded-[28px] border border-dashed border-white/10 bg-white/5 p-12 text-center">
+              <p class="text-xl font-semibold text-white">This shared drive is quiet.</p>
+              <p class="mx-auto mt-3 max-w-xl text-sm leading-7 text-slate-400">Upload the first file into this folder and NovaDrive will chunk it, write it through the active backend, and index it for everyone with access.</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="space-y-6">
+      <div id="new-folder" class="nova-panel p-5">
+        <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">New Folder</p>
+        <h3 class="mt-2 text-2xl font-semibold text-white">Create structure quickly</h3>
+        <form action="{{ url_for('folders.create') }}" method="post" class="mt-5 space-y-4">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="parent_id" value="{{ current_folder.id }}">
+          <div>
+            <label class="mb-2 block text-sm font-medium text-slate-200">Folder name</label>
+            <input type="text" name="name" class="nova-input" placeholder="Design backlog" {% if not can_write_to_workspace %}disabled{% endif %}>
+          </div>
+          <button type="submit" class="nova-button-primary w-full" {% if not can_write_to_workspace %}disabled{% endif %}>Create Folder</button>
+        </form>
+      </div>
+
+      <div class="nova-panel p-5">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Members</p>
+            <h3 class="mt-2 text-2xl font-semibold text-white">Who can access this drive</h3>
+          </div>
+          <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">{{ current_shared_drive.memberships|length }}</span>
+        </div>
+        <div class="mt-5 space-y-3">
+          {% for membership in current_shared_drive.memberships|sort(attribute='created_at') %}
+            <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <p class="text-sm font-medium text-white">{{ membership.user.username }}</p>
+                  <p class="mt-1 text-xs text-slate-500">{{ membership.user.email }}</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-[11px] uppercase tracking-[0.22em] text-slate-400">{{ membership.role }}</span>
+                  {% if can_manage_shared_drive and membership.role != 'owner' %}
+                    <form action="{{ url_for('shared_drives.remove_member', drive_id=current_shared_drive.id, member_id=membership.user_id) }}" method="post">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="rounded-xl border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20" data-confirm-submit data-confirm-title="Remove {{ membership.user.username }}?" data-confirm-body="This user will lose access to the shared drive.">Remove</button>
+                    </form>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+
+        {% if can_manage_shared_drive %}
+          <form action="{{ url_for('shared_drives.invite_member', drive_id=current_shared_drive.id) }}" method="post" class="mt-5 space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+              <label class="mb-2 block text-sm font-medium text-slate-200">User email</label>
+              <input type="email" name="email" class="nova-input" placeholder="member@example.com">
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-slate-200">Access</label>
+              <select name="role" class="nova-input">
+                <option value="editor">Editor</option>
+                <option value="viewer">Viewer</option>
+              </select>
+            </div>
+            <button type="submit" class="nova-button-primary w-full">Add Member by Email</button>
+          </form>
+        {% endif %}
+      </div>
+
+      {% if can_manage_shared_drive %}
+        <div class="nova-panel p-5">
+          <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Settings</p>
+          <h3 class="mt-2 text-2xl font-semibold text-white">Visibility and metadata</h3>
+          <form action="{{ url_for('shared_drives.update_settings', drive_id=current_shared_drive.id) }}" method="post" class="mt-5 space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+              <label class="mb-2 block text-sm font-medium text-slate-200">Name</label>
+              <input type="text" name="name" value="{{ current_shared_drive.name }}" class="nova-input">
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-slate-200">Description</label>
+              <input type="text" name="description" value="{{ current_shared_drive.description or '' }}" class="nova-input" placeholder="Shared assets and production files">
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-slate-200">Visibility</label>
+              <select name="visibility" class="nova-input">
+                <option value="invite_only" {% if current_shared_drive.visibility == 'invite_only' %}selected{% endif %}>Invite only</option>
+                <option value="request_access" {% if current_shared_drive.visibility == 'request_access' %}selected{% endif %}>Request access</option>
+                <option value="public" {% if current_shared_drive.visibility == 'public' %}selected{% endif %}>Public view</option>
+              </select>
+            </div>
+            {% if current_user.is_admin %}
+              <div>
+                <label class="mb-2 block text-sm font-medium text-slate-200">Storage cap (GB)</label>
+                <input type="number" name="storage_quota_gb" min="0" step="0.1" value="{{ '0' if current_shared_drive.storage_quota_bytes <= 0 else '%.2f'|format(current_shared_drive.storage_quota_bytes / 1073741824) }}" class="nova-input">
+              </div>
+            {% endif %}
+            <button type="submit" class="nova-button-primary w-full">Save Shared Drive Settings</button>
+          </form>
+        </div>
+
+        <div class="nova-panel p-5">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Requests</p>
+              <h3 class="mt-2 text-2xl font-semibold text-white">Pending access requests</h3>
+            </div>
+            <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">{{ pending_requests|length }}</span>
+          </div>
+          <div class="mt-5 space-y-3">
+            {% for request_record in pending_requests %}
+              <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <p class="text-sm font-medium text-white">{{ request_record.user.username }}</p>
+                    <p class="mt-1 text-xs text-slate-500">{{ request_record.user.email }} · requested {{ request_record.created_at|datetime }}</p>
+                  </div>
+                  <div class="flex gap-2">
+                    <form action="{{ url_for('shared_drives.approve_request', drive_id=current_shared_drive.id, request_id=request_record.id) }}" method="post">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/20">Approve</button>
+                    </form>
+                    <form action="{{ url_for('shared_drives.deny_request', drive_id=current_shared_drive.id, request_id=request_record.id) }}" method="post">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="rounded-xl border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20">Deny</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            {% else %}
+              <div class="rounded-2xl border border-dashed border-white/10 bg-white/5 px-4 py-8 text-center text-sm text-slate-400">
+                No pending join requests right now.
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}

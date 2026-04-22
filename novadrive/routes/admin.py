@@ -7,7 +7,7 @@ from flask_login import current_user, login_required
 from sqlalchemy import func
 
 from novadrive.extensions import db
-from novadrive.models import ActivityLog, File, Folder, User, UserSession
+from novadrive.models import ActivityLog, File, Folder, SharedDrive, User, UserSession
 from novadrive.services.auth_service import AuthService
 from novadrive.services.email_service import EmailService
 from novadrive.services.file_service import AccessError, FileService
@@ -66,9 +66,11 @@ def _redirect_to_user_workspace(user_id: int, folder_id: int | None = None):
 @admin_required
 def index():
     users = User.query.order_by(User.created_at.asc()).all()
+    shared_drives = SharedDrive.query.filter_by(is_active=True).order_by(SharedDrive.created_at.desc()).all()
     user_count = User.query.count()
     file_count = File.query.filter(File.deleted_at.is_(None), File.upload_status == "complete").count()
     folder_count = Folder.query.filter(Folder.deleted_at.is_(None)).count()
+    shared_drive_count = SharedDrive.query.filter_by(is_active=True).count()
     total_storage = (
         db.session.query(func.coalesce(func.sum(File.total_size), 0))
         .filter(File.deleted_at.is_(None), File.upload_status == "complete")
@@ -93,11 +95,13 @@ def index():
     return render_template(
         "admin/index.html",
         users=users,
+        shared_drives=shared_drives,
         user_usage_by_id=user_usage_by_id,
         stats={
             "user_count": user_count,
             "file_count": file_count,
             "folder_count": folder_count,
+            "shared_drive_count": shared_drive_count,
             "total_storage": int(total_storage or 0),
         },
         recent_activity=recent_activity,

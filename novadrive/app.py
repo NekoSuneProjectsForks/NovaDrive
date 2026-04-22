@@ -71,6 +71,7 @@ def _register_blueprints(app: Flask) -> None:
     from novadrive.routes.files import files_bp
     from novadrive.routes.folders import folders_bp
     from novadrive.routes.share import share_bp
+    from novadrive.routes.shared_drives import shared_drives_bp
     from novadrive.routes.webdav import webdav_bp
 
     app.register_blueprint(api_bp)
@@ -80,6 +81,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(folders_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(share_bp)
+    app.register_blueprint(shared_drives_bp)
     app.register_blueprint(webdav_bp)
 
 
@@ -135,6 +137,16 @@ def _ensure_runtime_schema(app: Flask) -> None:
             statements.append('ALTER TABLE "user" ADD COLUMN storage_quota_bytes BIGINT')
         statements.append('CREATE INDEX IF NOT EXISTS ix_user_api_key_hash ON "user" (api_key_hash)')
 
+        folder_columns = {column["name"] for column in inspector.get_columns("folder")}
+        if "shared_drive_id" not in folder_columns:
+            statements.append('ALTER TABLE "folder" ADD COLUMN shared_drive_id INTEGER')
+        statements.append('CREATE INDEX IF NOT EXISTS ix_folder_shared_drive_id ON "folder" (shared_drive_id)')
+
+        file_columns = {column["name"] for column in inspector.get_columns("file")}
+        if "shared_drive_id" not in file_columns:
+            statements.append('ALTER TABLE "file" ADD COLUMN shared_drive_id INTEGER')
+        statements.append('CREATE INDEX IF NOT EXISTS ix_file_shared_drive_id ON "file" (shared_drive_id)')
+
         with db.engine.begin() as connection:
             for statement in statements:
                 connection.execute(text(statement))
@@ -184,17 +196,22 @@ def _register_template_helpers(app: Flask) -> None:
     def inject_globals():
         sidebar_tree = []
         sidebar_usage = None
+        sidebar_shared_drives = []
         if current_user.is_authenticated:
             from novadrive.services.file_service import FileService
+            from novadrive.services.shared_drive_service import SharedDriveService
 
             sidebar_tree = FileService.folder_tree(current_user)
             sidebar_usage = FileService.usage_summary(current_user)
+            sidebar_shared_drives = SharedDriveService.visible_drives(current_user)
         return {
             "app_name": app.config["APP_NAME"],
             "allow_public_sharing": app.config["ALLOW_PUBLIC_SHARING"],
             "current_user_obj": current_user if current_user.is_authenticated else None,
             "sidebar_tree": sidebar_tree,
             "sidebar_usage": sidebar_usage,
+            "personal_sidebar_usage": sidebar_usage,
+            "sidebar_shared_drives": sidebar_shared_drives,
             "configured_storage_backend": configured_storage_backend_name(app.config),
             "configured_storage_backend_label": storage_backend_label(
                 configured_storage_backend_name(app.config)

@@ -2,7 +2,7 @@
 {% block title %}Admin · NovaDrive{% endblock %}
 {% block content %}
 <div class="space-y-6">
-  <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+  <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
     <div class="nova-panel p-6">
       <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Users</p>
       <p class="mt-3 text-4xl font-semibold text-white">{{ stats.user_count }}</p>
@@ -18,6 +18,10 @@
     <div class="nova-panel p-6">
       <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Storage</p>
       <p class="mt-3 text-4xl font-semibold text-white">{{ stats.total_storage|filesize }}</p>
+    </div>
+    <div class="nova-panel p-6">
+      <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Shared Drives</p>
+      <p class="mt-3 text-4xl font-semibold text-white">{{ stats.shared_drive_count }}</p>
     </div>
   </section>
 
@@ -108,6 +112,42 @@
           </div>
         </form>
       </div>
+
+      <div class="nova-panel p-6">
+        <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Create Shared Drive</p>
+        <h2 class="mt-2 text-2xl font-semibold text-white">Provision a team workspace</h2>
+        <p class="mt-2 text-sm leading-7 text-slate-400">Admins create shared drives, assign the initial owner by email, choose the visibility mode, and set the storage cap that the whole drive must share.</p>
+        <form action="{{ url_for('shared_drives.create') }}" method="post" class="mt-5 grid gap-4 md:grid-cols-2">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div>
+            <label class="mb-2 block text-sm font-medium text-slate-200">Drive name</label>
+            <input type="text" name="name" class="nova-input" required>
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-slate-200">Owner email</label>
+            <input type="email" name="owner_email" class="nova-input" required>
+          </div>
+          <div class="md:col-span-2">
+            <label class="mb-2 block text-sm font-medium text-slate-200">Description</label>
+            <input type="text" name="description" class="nova-input" placeholder="Marketing assets, launch files, and shared documentation">
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-slate-200">Visibility</label>
+            <select name="visibility" class="nova-input">
+              <option value="invite_only">Invite only</option>
+              <option value="request_access">Request access</option>
+              <option value="public">Public view</option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-slate-200">Storage cap in GB</label>
+            <input type="number" name="storage_quota_gb" min="0" step="0.1" value="10" class="nova-input" required>
+          </div>
+          <div class="md:col-span-2">
+            <button type="submit" class="nova-button-primary w-full">Create Shared Drive</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <div class="space-y-6">
@@ -176,6 +216,36 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div class="nova-panel overflow-hidden">
+        <div class="border-b border-white/10 px-6 py-4">
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Shared Drives</p>
+          <h2 class="mt-2 text-2xl font-semibold text-white">Provisioned workspaces</h2>
+          <p class="mt-2 text-sm text-slate-400">Each drive has its own owner, visibility policy, and storage cap. Open the workspace to inspect members and files directly.</p>
+        </div>
+        <div class="divide-y divide-white/5">
+          {% for drive in shared_drives %}
+            <div class="px-6 py-4">
+              <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p class="text-sm font-medium text-white">{{ drive.name }}</p>
+                  <p class="mt-1 text-xs text-slate-500">{{ drive.description or "No description set." }}</p>
+                  <div class="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
+                    <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1">Owner {{ drive.owner.email }}</span>
+                    <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1">{{ drive.visibility.replace('_', ' ') }}</span>
+                    <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1">{% if drive.storage_quota_bytes > 0 %}Cap {{ drive.storage_quota_bytes|filesize }}{% else %}Unlimited{% endif %}</span>
+                  </div>
+                </div>
+                <div class="flex gap-3">
+                  <a href="{{ url_for('shared_drives.workspace', drive_id=drive.id) }}" class="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/10 px-3 py-2 text-xs font-medium text-fuchsia-100 transition hover:bg-fuchsia-500/20">Open Shared Drive</a>
+                </div>
+              </div>
+            </div>
+          {% else %}
+            <div class="px-6 py-8 text-sm text-slate-400">No shared drives have been created yet.</div>
+          {% endfor %}
         </div>
       </div>
 

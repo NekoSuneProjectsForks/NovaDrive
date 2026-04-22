@@ -12,9 +12,10 @@ from flask import current_app
 from sqlalchemy import func
 
 from novadrive.extensions import db
-from novadrive.models import File, FileChunk, FileManifest, Folder, User, utcnow
+from novadrive.models import File, FileChunk, FileManifest, Folder, SharedDrive, User, utcnow
 from novadrive.services.activity_service import ActivityService
 from novadrive.services.auth_service import AuthService
+from novadrive.services.shared_drive_service import SharedDriveService
 from novadrive.services.storage_base import StorageBackendError
 from novadrive.services.storage_factory import (
     configured_storage_backend_name,
@@ -33,16 +34,30 @@ class AccessError(PermissionError):
 
 class FileService:
     @staticmethod
-    def current_usage_bytes(user: User) -> int:
+    def current_usage_bytes(user: User | None = None, shared_drive: SharedDrive | None = None) -> int:
         usage_query = db.session.query(func.coalesce(func.sum(File.total_size), 0)).filter(
-            File.owner_id == user.id,
             File.upload_status == "complete",
             File.deleted_at.is_(None),
         )
+        if shared_drive is not None:
+            usage_query = usage_query.filter(File.shared_drive_id == shared_drive.id)
+        elif user is not None:
+            usage_query = usage_query.filter(File.owner_id == user.id, File.shared_drive_id.is_(None))
+        else:
+            return 0
         return int(usage_query.scalar() or 0)
 
     @staticmethod
-    def get_accessible_root_folder(user: User, owner: User | None = None) -> Folder:
+    def get_accessible_root_folder(
+        user: User,
+        owner: User | None = None,
+        shared_drive: SharedDrive | None = None,
+    ) -> Folder:
+        if shared_drive is not None:
+            if not SharedDriveService.can_view(shared_drive, user):
+                raise AccessError("You do not have access to that shared drive.")
+            return SharedDriveService.get_root_folder(shared_drive)
+
         target_owner = owner or user
         if not user.is_admin and target_owner.id != user.id:
             raise AccessError("You do not have access to that drive.")
@@ -53,7 +68,10 @@ class FileService:
         folder = db.session.get(Folder, folder_id)
         if not folder or folder.deleted_at is not None:
             raise LookupError("Folder not found.")
-        if not user.is_admin and folder.owner_id != user.id:
+        if folder.shared_drive_id:
+            if not SharedDriveService.can_view(folder.shared_drive, user):
+                raise AccessError("You do not have access to that folder.")
+        elif not user.is_admin and folder.owner_id != user.id:
             raise AccessError("You do not have access to that folder.")
         return folder
 
@@ -64,7 +82,10 @@ class FileService:
             raise LookupError("File not found.")
         if file_record.is_deleted and not include_deleted:
             raise LookupError("File not found.")
-        if not user.is_admin and file_record.owner_id != user.id:
+        if file_record.shared_drive_id:
+            if not SharedDriveService.can_view(file_record.shared_drive, user):
+                raise AccessError("You do not have access to that file.")
+        elif not user.is_admin and file_record.owner_id != user.id:
             raise AccessError("You do not have access to that file.")
         return file_record
 
@@ -82,8 +103,9 @@ class FileService:
         user: User,
         exclude_folder_id: int | None = None,
         owner: User | None = None,
+        shared_drive: SharedDrive | None = None,
     ) -> list[tuple[int, str]]:
-        root = FileService.get_accessible_root_folder(user, owner=owner)
+        root = FileService.get_accessible_root_folder(user, owner=owner, shared_drive=shared_drive)
         options: list[tuple[int, str]] = []
 
         def walk(node: Folder, depth: int) -> None:
@@ -104,8 +126,12 @@ class FileService:
         return options
 
     @staticmethod
-    def folder_tree(user: User, owner: User | None = None) -> list[dict]:
-        root = FileService.get_accessible_root_folder(user, owner=owner)
+    def folder_tree(
+        user: User,
+        owner: User | None = None,
+        shared_drive: SharedDrive | None = None,
+    ) -> list[dict]:
+        root = FileService.get_accessible_root_folder(user, owner=owner, shared_drive=shared_drive)
 
         def build(node: Folder) -> dict:
             children = (
@@ -134,12 +160,20 @@ class FileService:
             File.deleted_at.is_(None),
         ).order_by(File.created_at.desc())
 
-        if not user.is_admin:
+        if folder.shared_drive_id:
+            if not SharedDriveService.can_view(folder.shared_drive, user):
+                raise AccessError("You do not have access to that shared drive.")
+            folders_query = folders_query.filter(Folder.shared_drive_id == folder.shared_drive_id)
+            files_query = files_query.filter(File.shared_drive_id == folder.shared_drive_id)
+        elif not user.is_admin:
             files_query = files_query.filter(File.owner_id == user.id)
             folders_query = folders_query.filter(Folder.owner_id == user.id)
 
         if scope == "global":
-            files_query = files_query.filter(File.owner_id == user.id)
+            if folder.shared_drive_id:
+                files_query = files_query.filter(File.shared_drive_id == folder.shared_drive_id)
+            else:
+                files_query = files_query.filter(File.owner_id == user.id)
         else:
             files_query = files_query.filter(File.folder_id == folder.id)
 
@@ -156,24 +190,37 @@ class FileService:
         return folders, files
 
     @staticmethod
-    def recent_files(user: User, limit: int = 6) -> list[File]:
+    def recent_files(user: User, limit: int = 6, shared_drive: SharedDrive | None = None) -> list[File]:
         query = File.query.filter(
             File.upload_status == "complete",
             File.deleted_at.is_(None),
-            File.owner_id == user.id,
         )
+        if shared_drive is not None:
+            query = query.filter(File.shared_drive_id == shared_drive.id)
+        else:
+            query = query.filter(File.owner_id == user.id, File.shared_drive_id.is_(None))
         return query.order_by(File.created_at.desc()).limit(limit).all()
 
     @staticmethod
-    def usage_summary(user: User) -> dict[str, object]:
+    def usage_summary(user: User | None = None, shared_drive: SharedDrive | None = None) -> dict[str, object]:
         file_count_query = db.session.query(func.count(File.id)).filter(
-            File.owner_id == user.id,
             File.upload_status == "complete",
             File.deleted_at.is_(None),
         )
-        total_used = FileService.current_usage_bytes(user)
+        if shared_drive is not None:
+            file_count_query = file_count_query.filter(File.shared_drive_id == shared_drive.id)
+            total_used = FileService.current_usage_bytes(shared_drive=shared_drive)
+            quota_bytes = int(shared_drive.storage_quota_bytes or 0)
+        else:
+            if user is None:
+                raise ValueError("A user or shared drive is required for usage summary.")
+            file_count_query = file_count_query.filter(
+                File.owner_id == user.id,
+                File.shared_drive_id.is_(None),
+            )
+            total_used = FileService.current_usage_bytes(user=user)
+            quota_bytes = AuthService.storage_quota_bytes_for_user(user, config=current_app.config)
         total_files = int(file_count_query.scalar() or 0)
-        quota_bytes = AuthService.storage_quota_bytes_for_user(user, config=current_app.config)
         is_unlimited = quota_bytes <= 0
         remaining_bytes = None if is_unlimited else max(quota_bytes - total_used, 0)
         percent = min(100, int((total_used / quota_bytes) * 100)) if quota_bytes > 0 else 0
@@ -189,11 +236,13 @@ class FileService:
 
     @staticmethod
     def create_folder(user: User, parent_folder: Folder, name: str) -> Folder:
+        FileService._ensure_can_write_folder(user, parent_folder)
         validated_name = validate_folder_name(name)
         folder = Folder(
-            name=FileService._make_unique_folder_name(user, parent_folder.id, validated_name),
+            name=FileService._make_unique_folder_name(parent_folder, validated_name),
             parent_id=parent_folder.id,
-            owner_id=parent_folder.owner_id,
+            owner_id=user.id if parent_folder.shared_drive_id else parent_folder.owner_id,
+            shared_drive_id=parent_folder.shared_drive_id,
         )
         db.session.add(folder)
         db.session.commit()
@@ -202,7 +251,10 @@ class FileService:
             target_type="folder",
             target_id=folder.id,
             user_id=user.id,
-            metadata={"parent_id": parent_folder.id},
+            metadata={
+                "parent_id": parent_folder.id,
+                "shared_drive_id": parent_folder.shared_drive_id,
+            },
         )
         return folder
 
@@ -210,9 +262,12 @@ class FileService:
     def rename_folder(user: User, folder: Folder, name: str) -> Folder:
         if folder.is_root:
             raise ValidationError("The root folder cannot be renamed.")
+        FileService._ensure_can_write_folder(user, folder)
+        parent_folder = folder.parent
+        if parent_folder is None:
+            raise ValidationError("Folder parent could not be resolved.")
         folder.name = FileService._make_unique_folder_name(
-            user,
-            folder.parent_id,
+            parent_folder,
             validate_folder_name(name),
             existing_folder_id=folder.id,
         )
@@ -235,13 +290,16 @@ class FileService:
             raise ValidationError("Folder cannot be moved into itself.")
         if FileService._is_descendant(destination_folder, folder):
             raise ValidationError("Folder cannot be moved into one of its children.")
-        if folder.owner_id != destination_folder.owner_id and not user.is_admin:
+        FileService._ensure_can_write_folder(user, folder)
+        FileService._ensure_can_write_folder(user, destination_folder)
+        if folder.shared_drive_id != destination_folder.shared_drive_id:
+            raise ValidationError("Folder cannot be moved between different drives.")
+        if folder.shared_drive_id is None and folder.owner_id != destination_folder.owner_id and not user.is_admin:
             raise AccessError("Folder ownership mismatch.")
 
         folder.parent_id = destination_folder.id
         folder.name = FileService._make_unique_folder_name(
-            user,
-            destination_folder.id,
+            destination_folder,
             folder.name,
             existing_folder_id=folder.id,
         )
@@ -260,6 +318,7 @@ class FileService:
     def delete_folder(user: User, folder: Folder, hard_delete: bool = False) -> None:
         if folder.is_root:
             raise ValidationError("The root folder cannot be deleted.")
+        FileService._ensure_can_write_folder(user, folder)
 
         child_folders = Folder.query.filter_by(parent_id=folder.id, deleted_at=None).all()
         child_files = File.query.filter_by(folder_id=folder.id, deleted_at=None).all()
@@ -292,6 +351,7 @@ class FileService:
 
     @staticmethod
     def upload_single_file(user: User, folder: Folder, upload, config, existing_file: File | None = None) -> File:
+        FileService._ensure_can_write_folder(user, folder)
         safe_original_filename = normalize_filename(upload.filename)
         mime_type = upload.mimetype or mimetypes.guess_type(safe_original_filename)[0] or "application/octet-stream"
         chunk_size = config["DISCORD_CHUNK_SIZE_BYTES"]
@@ -308,11 +368,27 @@ class FileService:
             total_size += len(buffer)
             if total_size > config["MAX_UPLOAD_SIZE_BYTES"]:
                 spool.close()
-                raise ValidationError("The file exceeds the configured upload limit.")
+                if config.get("CLOUDFLARE_TUNNEL_COMPAT"):
+                    plan = str(config.get("CLOUDFLARE_TUNNEL_PLAN", "free")).capitalize()
+                    raise ValidationError(
+                        f"This file cannot be uploaded because this NovaDrive instance is running through "
+                        f"Cloudflare {plan} tier compatibility mode. Maximum upload size: "
+                        f"{FileService._format_bytes(config['MAX_UPLOAD_SIZE_BYTES'])}."
+                    )
+                raise ValidationError(
+                    f"This file cannot be uploaded because it exceeds the maximum upload size of "
+                    f"{FileService._format_bytes(config['MAX_UPLOAD_SIZE_BYTES'])}."
+                )
             digest.update(buffer)
             spool.write(buffer)
 
-        FileService._ensure_storage_quota(user, total_size, config, existing_file=existing_file)
+        FileService._ensure_storage_quota(
+            user,
+            total_size,
+            config,
+            existing_file=existing_file,
+            shared_drive=folder.shared_drive,
+        )
         spool.seek(0)
         backend_name = (
             existing_file.manifest.storage_backend
@@ -322,7 +398,8 @@ class FileService:
         backend = get_storage_backend(config, backend_name=backend_name)
         file_record = existing_file or File(
             folder_id=folder.id,
-            owner_id=folder.owner_id,
+            owner_id=user.id if folder.shared_drive_id else folder.owner_id,
+            shared_drive_id=folder.shared_drive_id,
             filename=FileService._make_unique_filename(folder.id, safe_original_filename),
             original_filename=safe_original_filename,
             mime_type=mime_type,
@@ -463,6 +540,7 @@ class FileService:
 
     @staticmethod
     def rename_file(user: User, file_record: File, new_name: str) -> File:
+        FileService._ensure_can_write_file(user, file_record)
         file_record.filename = FileService._make_unique_filename(
             file_record.folder_id,
             normalize_filename(new_name),
@@ -481,7 +559,11 @@ class FileService:
 
     @staticmethod
     def move_file(user: User, file_record: File, destination_folder: Folder) -> File:
-        if file_record.owner_id != destination_folder.owner_id and not user.is_admin:
+        FileService._ensure_can_write_file(user, file_record)
+        FileService._ensure_can_write_folder(user, destination_folder)
+        if file_record.shared_drive_id != destination_folder.shared_drive_id:
+            raise ValidationError("File cannot be moved between different drives.")
+        if file_record.shared_drive_id is None and file_record.owner_id != destination_folder.owner_id and not user.is_admin:
             raise AccessError("File ownership mismatch.")
         file_record.folder_id = destination_folder.id
         file_record.filename = FileService._make_unique_filename(
@@ -502,6 +584,7 @@ class FileService:
 
     @staticmethod
     def delete_file(user: User, file_record: File, hard_delete: bool = False) -> None:
+        FileService._ensure_can_write_file(user, file_record)
         if hard_delete:
             backend_name = (
                 file_record.manifest.storage_backend
@@ -557,8 +640,7 @@ class FileService:
 
     @staticmethod
     def _make_unique_folder_name(
-        user: User,
-        parent_id: int | None,
+        parent_folder: Folder,
         desired_name: str,
         existing_folder_id: int | None = None,
     ) -> str:
@@ -566,12 +648,14 @@ class FileService:
         counter = 1
         while True:
             query = Folder.query.filter(
-                Folder.parent_id == parent_id,
+                Folder.parent_id == parent_folder.id,
                 Folder.deleted_at.is_(None),
                 Folder.name == candidate,
             )
-            if not user.is_admin:
-                query = query.filter(Folder.owner_id == user.id)
+            if parent_folder.shared_drive_id is not None:
+                query = query.filter(Folder.shared_drive_id == parent_folder.shared_drive_id)
+            else:
+                query = query.filter(Folder.owner_id == parent_folder.owner_id)
             if existing_folder_id is not None:
                 query = query.filter(Folder.id != existing_folder_id)
             if not query.first():
@@ -609,12 +693,20 @@ class FileService:
         config,
         *,
         existing_file: File | None = None,
+        shared_drive: SharedDrive | None = None,
     ) -> None:
-        quota_bytes = AuthService.storage_quota_bytes_for_user(user, config=config)
+        if shared_drive is not None:
+            quota_bytes = int(shared_drive.storage_quota_bytes or 0)
+        else:
+            quota_bytes = AuthService.storage_quota_bytes_for_user(user, config=config)
         if quota_bytes <= 0:
             return
 
-        current_usage = FileService.current_usage_bytes(user)
+        current_usage = (
+            FileService.current_usage_bytes(shared_drive=shared_drive)
+            if shared_drive is not None
+            else FileService.current_usage_bytes(user=user)
+        )
         if existing_file and existing_file.upload_status == "complete" and not existing_file.is_deleted:
             current_usage = max(0, current_usage - existing_file.total_size)
 
@@ -623,6 +715,19 @@ class FileService:
             return
 
         remaining_bytes = max(quota_bytes - current_usage, 0)
+        if shared_drive is not None:
+            if remaining_bytes <= 0:
+                raise ValidationError(
+                    "This shared drive is full. "
+                    f"It has used all available storage ({FileService._format_bytes(quota_bytes)}). "
+                    "Ask an admin to increase the shared drive storage cap or delete files."
+                )
+            raise ValidationError(
+                "This upload cannot be completed because it would exceed the shared drive storage quota. "
+                f"Remaining space: {FileService._format_bytes(remaining_bytes)} of "
+                f"{FileService._format_bytes(quota_bytes)}."
+            )
+
         if remaining_bytes <= 0:
             raise ValidationError(
                 "Your storage is full. "
@@ -647,3 +752,21 @@ class FileService:
                 return f"{size:.1f} {unit}"
             size /= 1024
         return f"{value} B"
+
+    @staticmethod
+    def _ensure_can_write_folder(user: User, folder: Folder) -> None:
+        if folder.shared_drive_id:
+            if not SharedDriveService.can_write(folder.shared_drive, user):
+                raise AccessError("You do not have write access to that shared drive.")
+            return
+        if not user.is_admin and folder.owner_id != user.id:
+            raise AccessError("You do not have write access to that folder.")
+
+    @staticmethod
+    def _ensure_can_write_file(user: User, file_record: File) -> None:
+        if file_record.shared_drive_id:
+            if not SharedDriveService.can_write(file_record.shared_drive, user):
+                raise AccessError("You do not have write access to that shared drive.")
+            return
+        if not user.is_admin and file_record.owner_id != user.id:
+            raise AccessError("You do not have write access to that file.")

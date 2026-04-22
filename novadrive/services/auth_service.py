@@ -64,6 +64,7 @@ class AuthService:
         root_folder = Folder(
             name="My Drive",
             owner_id=user.id,
+            shared_drive_id=None,
             is_root=True,
         )
         db.session.add(root_folder)
@@ -133,10 +134,15 @@ class AuthService:
 
     @staticmethod
     def get_root_folder(user: User) -> Folder:
-        root = Folder.query.filter_by(owner_id=user.id, is_root=True, deleted_at=None).first()
+        root = Folder.query.filter_by(
+            owner_id=user.id,
+            shared_drive_id=None,
+            is_root=True,
+            deleted_at=None,
+        ).first()
         if root:
             return root
-        root = Folder(name="My Drive", owner_id=user.id, is_root=True)
+        root = Folder(name="My Drive", owner_id=user.id, shared_drive_id=None, is_root=True)
         db.session.add(root)
         db.session.commit()
         return root

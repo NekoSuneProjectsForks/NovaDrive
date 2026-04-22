@@ -1,5 +1,7 @@
 {% from "components/folder_tree.html" import render_folder_tree %}
 {% set active_folder_id = current_folder.id if current_folder is defined else (file.folder_id if file is defined else None) %}
+{% set workspace_endpoint = 'shared_drives.workspace' if current_shared_drive is defined and current_shared_drive else 'dashboard.index' %}
+{% set workspace_shared_drive_id = current_shared_drive.id if current_shared_drive is defined and current_shared_drive else None %}
 <aside class="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-white/10 bg-black/40 px-5 pb-6 pt-5 backdrop-blur-2xl lg:flex lg:flex-col">
   <a href="{{ url_for('dashboard.index') }}" class="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 transition hover:border-fuchsia-400/40 hover:bg-white/10">
     <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-fuchsia-500 to-violet-500 text-lg font-bold text-white shadow-[0_0_30px_rgba(192,38,211,0.35)]">
@@ -14,7 +16,11 @@
   <nav class="mt-6 space-y-2">
     <a href="{{ url_for('dashboard.index') }}" class="nova-nav-link {% if request.endpoint == 'dashboard.index' %}nova-nav-link-active{% endif %}">
       <span>Drive</span>
-      <span class="rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-slate-400">{{ sidebar_usage.total_files if sidebar_usage else 0 }}</span>
+      <span class="rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-slate-400">{{ personal_sidebar_usage.total_files if personal_sidebar_usage else 0 }}</span>
+    </a>
+    <a href="{{ url_for('shared_drives.index') }}" class="nova-nav-link {% if request.endpoint and request.endpoint.startswith('shared_drives.') %}nova-nav-link-active{% endif %}">
+      <span>Shared Drives</span>
+      <span class="rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-slate-400">{{ sidebar_shared_drives|length if sidebar_shared_drives is defined else 0 }}</span>
     </a>
     {% if current_user.is_admin %}
       <a href="{{ url_for('admin.index') }}" class="nova-nav-link {% if request.endpoint == 'admin.index' %}nova-nav-link-active{% endif %}">
@@ -24,13 +30,31 @@
     {% endif %}
   </nav>
 
+  {% if sidebar_shared_drives is defined and sidebar_shared_drives %}
+    <div class="mt-6 rounded-3xl border border-white/10 bg-white/5 p-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-white">Shared Drives</h2>
+        <span class="text-xs text-slate-500">collab</span>
+      </div>
+      <div class="mt-4 max-h-48 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
+        {% for drive in sidebar_shared_drives %}
+          <a href="{{ url_for('shared_drives.workspace', drive_id=drive.id) }}"
+             class="flex items-center justify-between rounded-2xl px-3 py-2 text-sm transition {% if current_shared_drive is defined and current_shared_drive and current_shared_drive.id == drive.id %}bg-fuchsia-500/15 text-white shadow-[0_0_24px_rgba(168,85,247,0.18)]{% else %}text-slate-300 hover:bg-white/7 hover:text-white{% endif %}">
+            <span class="truncate">{{ drive.name }}</span>
+            <span class="text-[10px] uppercase tracking-[0.22em] text-slate-500">{{ drive.visibility.replace('_', ' ') }}</span>
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
   <div class="mt-6 rounded-3xl border border-white/10 bg-white/5 p-4">
     <div class="flex items-center justify-between">
-      <h2 class="text-sm font-semibold text-white">Folders</h2>
+      <h2 class="text-sm font-semibold text-white">{{ "Shared Folders" if current_shared_drive is defined and current_shared_drive else "Folders" }}</h2>
       <span class="text-xs text-slate-500">tree</span>
     </div>
     <div class="mt-4 max-h-[22rem] overflow-y-auto pr-1 custom-scrollbar">
-      {{ render_folder_tree(sidebar_tree, active_folder_id) }}
+      {{ render_folder_tree(sidebar_tree, active_folder_id, workspace_endpoint, workspace_shared_drive_id) }}
     </div>
   </div>
 
@@ -53,7 +77,11 @@
     </div>
     <p class="mt-3 text-xs leading-5 text-slate-400">
       {% if sidebar_usage and sidebar_usage.is_unlimited %}
-        No account storage cap is applied to this drive.
+        {% if current_shared_drive is defined and current_shared_drive %}
+          No shared drive storage cap is applied to this drive.
+        {% else %}
+          No account storage cap is applied to this drive.
+        {% endif %}
       {% else %}
         {{ (sidebar_usage.remaining_bytes if sidebar_usage else 0)|filesize }} remaining out of {{ (sidebar_usage.quota_bytes if sidebar_usage else 0)|filesize }}.
       {% endif %}

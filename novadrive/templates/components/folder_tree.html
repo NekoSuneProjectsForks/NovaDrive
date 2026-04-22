@@ -1,15 +1,15 @@
-{% macro render_folder_tree(nodes, active_folder_id=None) %}
+{% macro render_folder_tree(nodes, active_folder_id=None, workspace_endpoint='dashboard.index', shared_drive_id=None) %}
   <ul class="space-y-1.5">
     {% for node in nodes %}
       <li>
-        <a href="{{ url_for('dashboard.index', folder_id=node.folder.id) }}"
+        <a href="{{ url_for(workspace_endpoint, drive_id=shared_drive_id, folder_id=node.folder.id) if shared_drive_id else url_for(workspace_endpoint, folder_id=node.folder.id) }}"
            class="flex items-center gap-3 rounded-2xl px-3 py-2 text-sm transition {% if active_folder_id == node.folder.id %}bg-fuchsia-500/15 text-white shadow-[0_0_24px_rgba(168,85,247,0.18)]{% else %}text-slate-300 hover:bg-white/7 hover:text-white{% endif %}">
           <span class="inline-flex h-7 w-7 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-[10px] uppercase tracking-[0.2em] text-fuchsia-200">FD</span>
           <span class="truncate">{{ node.folder.name }}</span>
         </a>
         {% if node.children %}
           <div class="ml-4 mt-1 border-l border-white/10 pl-3">
-            {{ render_folder_tree(node.children, active_folder_id) }}
+            {{ render_folder_tree(node.children, active_folder_id, workspace_endpoint, shared_drive_id) }}
           </div>
         {% endif %}
       </li>

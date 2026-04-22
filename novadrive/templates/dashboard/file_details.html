@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{{ file.filename }} - NovaDrive{% endblock %}
 {% block content %}
-{% set workspace_url = url_for('admin.user_details', user_id=admin_target_user.id, folder_id=file.folder_id) if admin_target_user else url_for('dashboard.index', folder_id=file.folder_id) %}
+{% set workspace_url = url_for('admin.user_details', user_id=admin_target_user.id, folder_id=file.folder_id) if admin_target_user else (url_for('shared_drives.workspace', drive_id=current_shared_drive.id, folder_id=file.folder_id) if current_shared_drive else url_for('dashboard.index', folder_id=file.folder_id)) %}
 <div class="space-y-6">
   <section class="nova-panel p-6">
     <div class="flex flex-wrap items-center gap-3 text-sm text-slate-400">
       {% for crumb in breadcrumbs %}
-        <a href="{{ url_for('admin.user_details', user_id=admin_target_user.id, folder_id=crumb.id) if admin_target_user else url_for('dashboard.index', folder_id=crumb.id) }}" class="transition hover:text-white">{{ crumb.name }}</a>
+        <a href="{{ url_for('admin.user_details', user_id=admin_target_user.id, folder_id=crumb.id) if admin_target_user else (url_for('shared_drives.workspace', drive_id=current_shared_drive.id, folder_id=crumb.id) if current_shared_drive else url_for('dashboard.index', folder_id=crumb.id)) }}" class="transition hover:text-white">{{ crumb.name }}</a>
         {% if not loop.last %}<span>/</span>{% endif %}
       {% endfor %}
       <span>/</span>
@@ -109,10 +109,13 @@
     <div class="space-y-6">
       <div class="nova-panel p-6">
         <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Rename</p>
+        {% if current_shared_drive and not can_write_file %}
+          <p class="mt-4 text-sm text-amber-200">This shared drive is read-only for your account, so you cannot rename this file.</p>
+        {% endif %}
         <form action="{{ url_for('files.rename', file_id=file.id) }}" method="post" class="mt-4 space-y-4">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="text" name="filename" value="{{ file.filename }}" class="nova-input">
-          <button type="submit" class="nova-button-primary w-full">Save New Name</button>
+          <input type="text" name="filename" value="{{ file.filename }}" class="nova-input" {% if current_shared_drive and not can_write_file %}disabled{% endif %}>
+          <button type="submit" class="nova-button-primary w-full" {% if current_shared_drive and not can_write_file %}disabled{% endif %}>Save New Name</button>
         </form>
       </div>
 
@@ -128,7 +131,7 @@
               <option value="{{ option_id }}" {% if option_id == file.folder_id %}selected{% endif %}>{{ option_label }}</option>
             {% endfor %}
           </select>
-          <button type="submit" class="nova-button-secondary w-full">Move File</button>
+          <button type="submit" class="nova-button-secondary w-full" {% if current_shared_drive and not can_write_file %}disabled{% endif %}>Move File</button>
         </form>
       </div>
 
@@ -140,8 +143,10 @@
             <label class="mb-2 block text-sm font-medium text-slate-200">Optional expiry</label>
             {{ share_form.expires_at(class="nova-input") }}
           </div>
-          <button type="submit" class="nova-button-primary w-full" {% if not allow_public_sharing %}disabled{% endif %}>Create Share Link</button>
-          {% if not allow_public_sharing %}
+          <button type="submit" class="nova-button-primary w-full" {% if not allow_public_sharing or (current_shared_drive and not can_write_file) %}disabled{% endif %}>Create Share Link</button>
+          {% if current_shared_drive and not can_write_file %}
+            <p class="text-sm text-amber-200">Only writable members can create public file shares from this shared drive.</p>
+          {% elif not allow_public_sharing %}
             <p class="text-sm text-amber-200">Public sharing is disabled by configuration.</p>
           {% endif %}
         </form>
@@ -179,11 +184,14 @@
         <form action="{{ url_for('files.delete', file_id=file.id) }}" method="post" class="mt-5 space-y-3">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="folder_id" value="{{ file.folder_id }}">
+          {% if current_shared_drive %}
+            <input type="hidden" name="shared_drive_id" value="{{ current_shared_drive.id }}">
+          {% endif %}
           {% if admin_target_user %}
             <input type="hidden" name="admin_user_id" value="{{ admin_target_user.id }}">
           {% endif %}
-          <button type="submit" class="w-full rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm font-medium text-rose-100 transition hover:bg-rose-500/20" data-confirm-submit data-confirm-title="Delete {{ file.filename }}?" data-confirm-body="This will remove the file from the active drive index.">Soft Delete</button>
-          <button type="submit" name="hard_delete" value="true" class="w-full rounded-2xl border border-rose-400/20 bg-transparent px-4 py-3 text-sm font-medium text-rose-200 transition hover:bg-rose-500/10" data-confirm-submit data-confirm-title="Hard delete {{ file.filename }}?" data-confirm-body="This will permanently delete the database record and stored chunk objects.">Hard Delete</button>
+          <button type="submit" class="w-full rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm font-medium text-rose-100 transition hover:bg-rose-500/20" data-confirm-submit data-confirm-title="Delete {{ file.filename }}?" data-confirm-body="This will remove the file from the active drive index." {% if current_shared_drive and not can_write_file %}disabled{% endif %}>Soft Delete</button>
+          <button type="submit" name="hard_delete" value="true" class="w-full rounded-2xl border border-rose-400/20 bg-transparent px-4 py-3 text-sm font-medium text-rose-200 transition hover:bg-rose-500/10" data-confirm-submit data-confirm-title="Hard delete {{ file.filename }}?" data-confirm-body="This will permanently delete the database record and stored chunk objects." {% if current_shared_drive and not can_write_file %}disabled{% endif %}>Hard Delete</button>
         </form>
       </div>
     </div>
