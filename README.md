@@ -21,7 +21,7 @@ This repo gives you a clean base to keep building from.
 ## Highlights
 
 - Secure authentication with hashed passwords and signed session cookies
-- Automatic first-user admin bootstrap
+- One-time bootstrap admin account with forced username, email, and password rotation on first sign-in
 - Optional SMTP-backed email verification for account activation
 - WebDAV support for direct upload, download, folder creation, delete, and move from desktop/mobile clients
 - S3-compatible storage mode for AWS S3, MinIO, and other compatible providers
@@ -53,9 +53,11 @@ This repo gives you a clean base to keep building from.
 flowchart LR
     U[User Browser] --> W[Flask Web App]
     W --> DB[(SQLite)]
-    W --> B[Discord Bot Bridge]
+    W --> SB{Storage Backend}
+    SB --> B[Discord Bot Bridge]
     B --> D[Discord Storage Channels]
     D --> B
+    SB --> S3[S3-Compatible Bucket]
     B --> W
     W --> U
 ```
@@ -68,7 +70,7 @@ flowchart LR
 4. The file is split into chunks according to the configured chunk size.
 5. Each chunk is sent to the active storage backend.
 6. NovaDrive stores the returned backend references, locators, chunk checksums, and manifest metadata in SQLite.
-8. On download, NovaDrive fetches the chunks back in order, verifies each chunk hash, rebuilds the file, verifies the final SHA256, and serves the file to the client.
+7. On download, NovaDrive fetches the chunks back in order, verifies each chunk hash, rebuilds the file, verifies the final SHA256, and serves the file to the client.
 
 ## Why there are two processes
 
@@ -108,9 +110,14 @@ README.md                 You are here
 - [novadrive/app.py](novadrive/app.py): app factory, error handlers, CLI commands
 - [novadrive/models.py](novadrive/models.py): users, folders, files, manifests, chunks, share links, activity, sessions
 - [novadrive/services/file_service.py](novadrive/services/file_service.py): uploads, chunk orchestration, rename/move/delete, rebuild validation
+- [novadrive/services/s3_storage.py](novadrive/services/s3_storage.py): S3-compatible backend for AWS S3, MinIO, and similar providers
 - [novadrive/services/discord_storage.py](novadrive/services/discord_storage.py): HTTP client for the bot bridge
+- [novadrive/services/webdav_service.py](novadrive/services/webdav_service.py): WebDAV auth, path resolution, and file/folder operations
+- [novadrive/services/verification_service.py](novadrive/services/verification_service.py): email confirmation token generation and validation
 - [novadrive/discord_bot.py](novadrive/discord_bot.py): live Discord upload/fetch/delete logic
-- [novadrive/routes](novadrive/routes): auth, dashboard, files, folders, share, and admin blueprints
+- [novadrive/routes/api.py](novadrive/routes/api.py): ShareX upload API, API key management, and SXCU generation
+- [novadrive/utils/urls.py](novadrive/utils/urls.py): proxy-aware public URL generation for shares, ShareX, and email links
+- [novadrive/routes](novadrive/routes): auth, dashboard, files, folders, share, WebDAV, API, and admin blueprints
 
 ## Feature coverage
 
@@ -157,6 +164,7 @@ README.md                 You are here
 - `PROPFIND`, `GET`, `HEAD`, `PUT`, `MKCOL`, `DELETE`, `MOVE`, and `OPTIONS`
 - Desktop and mobile client support using normal NovaDrive credentials
 - Works for verified multi-user accounts without exposing the global admin view
+- The bootstrap admin must complete the forced credential-change flow before WebDAV auth is allowed
 
 ### ShareX uploads
 
@@ -165,6 +173,7 @@ README.md                 You are here
 - One-click `.sxcu` export from the dashboard
 - File, image, and text upload support through the same endpoint
 - Share link response payloads with preview, raw, and download URLs
+- Reverse-proxy-safe URL generation when `APP_EXTERNAL_URL` is set correctly
 
 ### Admin surface
 
@@ -178,6 +187,7 @@ README.md                 You are here
 - Per-user storage quota management
 - User profile editing, password resets, verification toggles, and direct workspace browsing
 - Admin-side file and folder deletion inside a selected user's drive
+- Default admin bootstrap protection so only one built-in admin account is ever auto-created
 
 ## Quick start
 
@@ -236,6 +246,7 @@ At minimum, set:
 
 - `SECRET_KEY`
 - `STORAGE_BACKEND`
+- `APP_EXTERNAL_URL` if the app is accessed through a public domain, HTTPS reverse proxy, Cloudflare, or anything other than the local Flask URL
 - If using Discord: `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_STORAGE_CHANNEL_IDS`, and `DISCORD_BOT_BRIDGE_SHARED_SECRET`
 - If using S3: `S3_BUCKET_NAME`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`
 
@@ -267,11 +278,13 @@ Alternative:
 python run.py
 ```
 
-### 7. Start the Discord bot bridge in another terminal
+### 7. Start the Discord bot bridge in another terminal if you are using Discord storage
 
 ```bash
 python -m novadrive.discord_bot
 ```
+
+If `STORAGE_BACKEND=s3`, you can skip this step.
 
 ### 8. Open NovaDrive
 
@@ -296,9 +309,24 @@ The default admin is only bootstrapped once per database and is not recreated au
 
 If `EMAIL_VERIFICATION_REQUIRED=true`, new accounts must confirm their email before normal login and WebDAV access are enabled.
 
+If NovaDrive sits behind nginx, Traefik, Caddy, Cloudflare, or another reverse proxy, set `APP_EXTERNAL_URL` to the exact public HTTPS origin, for example:
+
+```text
+APP_EXTERNAL_URL=https://drive.example.com
+```
+
+That value is used when NovaDrive generates:
+
+- verification emails
+- ShareX upload endpoints inside exported `.sxcu` files
+- public share, raw, and download links
+- WebDAV endpoint examples shown in the UI
+
 ## Discord setup guide
 
-To make the storage layer work properly:
+Skip this entire section if `STORAGE_BACKEND=s3`.
+
+To make the Discord storage layer work properly:
 
 1. Create a bot application in the Discord Developer Portal.
 2. Generate a bot token and place it in `DISCORD_BOT_TOKEN`.
@@ -323,12 +351,14 @@ Recommended bot permissions:
 | --- | --- | --- |
 | `SECRET_KEY` | Flask session signing secret | `super-long-random-secret` |
 | `DATABASE_URL` | SQLAlchemy database URL | `sqlite:///instance/novadrive.db` |
-| `APP_EXTERNAL_URL` | Public app URL used in verification emails | `https://drive.example.com` |
+| `APP_EXTERNAL_URL` | Public HTTPS URL used in verification emails, ShareX configs, and generated share links | `https://drive.example.com` |
 | `MAX_UPLOAD_SIZE_BYTES` | Max allowed file size through Flask | `536870912` |
 | `SPOOL_MAX_MEMORY_BYTES` | Max in-memory temp spool before disk spill | `8388608` |
 | `TEXT_PREVIEW_MAX_BYTES` | Max text bytes rendered inline on preview pages | `1048576` |
 | `DEFAULT_USER_STORAGE_QUOTA_BYTES` | Default storage cap applied to new non-admin users | `10737418240` |
 | `DEFAULT_ADMIN_STORAGE_QUOTA_BYTES` | Default storage cap applied to new admin users, `0` for unlimited | `0` |
+| `SESSION_COOKIE_SECURE` | Marks login cookies as HTTPS-only in production | `true` |
+| `PERMANENT_SESSION_LIFETIME_HOURS` | Persistent login lifetime | `24` |
 | `STORAGE_BACKEND` | Primary blob backend, `discord` or `s3` | `s3` |
 | `ALLOW_PUBLIC_SHARING` | Enables share link generation | `true` |
 | `SOFT_DELETE_ENABLED` | Keeps deleted items out of active view by default | `true` |
@@ -393,6 +423,13 @@ ShareX uploads return a public NovaDrive share page that can:
 - display text files in the browser
 - expose raw and download links
 
+Important notes:
+
+- ShareX upload endpoints are `POST` only.
+- If the app is behind HTTPS or a reverse proxy, set `APP_EXTERNAL_URL` before downloading the `.sxcu` file.
+- If you change the public domain, protocol, or proxy config later, download a fresh `.sxcu` and re-import it into ShareX.
+- If ShareX reports HTML or `405 Method Not Allowed` instead of JSON, it is usually still hitting an old `http://` uploader URL and getting redirected before the upload request reaches NovaDrive correctly.
+
 ## WebDAV quick start
 
 NovaDrive now exposes a built-in WebDAV endpoint at `/dav/`.
@@ -407,8 +444,10 @@ Notes:
 
 - WebDAV only exposes the authenticated user's own drive.
 - Admins still get their own drive over WebDAV, not the full global admin scope.
+- The built-in bootstrap admin cannot use WebDAV until the forced credential-change screen has been completed.
 - If email verification is required, the account must be verified before WebDAV login works.
 - If the account reaches its storage quota, WebDAV uploads are blocked until an admin raises the limit or files are deleted.
+- Use the same public HTTPS host you set in `APP_EXTERNAL_URL` if the app is behind a reverse proxy.
 
 ## Storage model details
 
@@ -443,7 +482,7 @@ The application tracks:
 
 - Chunk index
 - Backend target identifier
-- Backend object reference
+- Backend object reference such as a Discord message attachment locator or an S3 object key
 - Stored locator URL or URI
 - Attachment/object filename
 - Chunk size
@@ -518,7 +557,7 @@ docker build -t novadrive .
 ### Run with Docker Compose
 
 ```bash
-docker compose up --build
+docker compose up
 ```
 
 The compose file starts:
@@ -531,6 +570,9 @@ Important notes:
 - Both services read from `.env`.
 - Compose overrides `DISCORD_BOT_BRIDGE_URL` automatically so the web app talks to the bot container over the internal Docker network.
 - The SQLite database and instance files are stored in the named `novadrive-instance` volume.
+- The current `docker-compose.yml` is Discord-oriented and starts the bot container by default. For pure S3 deployments, remove or override the `bot` service and the `web.depends_on` entry.
+- The Docker build compiles the Tailwind bundle inside the image, so CSS fixes require rebuilding or pulling a newer image before restarting containers.
+- The checked-in compose file references `ghcr.io/nekosuneprojects/novadrive:main`. If you want to run your own local image through Compose, either retag your image to that name or edit the `image:` lines first.
 
 ## GitHub Actions container build
 
@@ -539,19 +581,21 @@ The repository now includes `.github/workflows/docker.yml`.
 It will:
 
 - build the Docker image on pull requests
-- build on pushes to branches
-- publish to `ghcr.io/<owner>/<repo>` on pushes to `main` or `master`
+- build and push a multi-arch image to `ghcr.io/<owner>/<repo>` on pushes to `experimental`, `main`, and matching version tags
+- publish both `linux/amd64` and `linux/arm64` variants through Docker Buildx
+- reuse GitHub Actions cache layers for faster rebuilds
 
 ## Development workflow
 
 ### Recommended local workflow
 
 1. Start the Flask app.
-2. Start the Discord bot bridge.
+2. Start the Discord bot bridge if you are using the Discord backend.
 3. Start Tailwind in watch mode if you are editing UI.
-4. Register the first user or create one via CLI.
-5. Upload a file and confirm that Discord messages appear in the storage channels.
-6. Download the same file and confirm the rebuild succeeds.
+4. Sign in with the one-time bootstrap admin or register a normal account.
+5. If you used the bootstrap admin, complete the forced username, email, and password change immediately.
+6. Upload a file and confirm storage writes land in Discord channels or your S3 bucket, depending on backend.
+7. Test download, share links, ShareX, or WebDAV against the same account.
 
 ### Typical dev loop
 
@@ -560,6 +604,8 @@ flask --app novadrive.app:create_app run --debug
 python -m novadrive.discord_bot
 npm run watch:css
 ```
+
+For S3 mode, omit the Discord bot command.
 
 ## Troubleshooting
 
@@ -590,10 +636,19 @@ Check:
 
 Check:
 
-- the bot is running
+- if `STORAGE_BACKEND=discord`, the bot is running
 - the bot token is valid
 - the bot has permission to send attachments in the storage channels
 - your configured chunk size is below the effective Discord upload limit for that server/account tier
+
+### ShareX returns HTML or `405 Method Not Allowed`
+
+Check:
+
+- `APP_EXTERNAL_URL` is set to the public HTTPS URL, not the internal container or local HTTP URL
+- you downloaded a fresh `.sxcu` after changing domain or proxy settings
+- ShareX is using `POST` for the request
+- your reverse proxy forwards the original host and scheme so NovaDrive can generate correct public URLs
 
 ### Downloads fail or rebuilt hashes do not match
 
@@ -611,6 +666,16 @@ Build the Tailwind bundle:
 ```bash
 npm run build:css
 ```
+
+If you are running in Docker, rebuild or pull the image again so the generated CSS inside the container is updated.
+
+### SQLite says it cannot open the database file in Docker
+
+Check:
+
+- the `/app/instance` volume is mounted and writable
+- `DATABASE_URL` still points at a SQLite path under `instance/`
+- the container user can create the SQLite file and parent directory
 
 ## Known limitations
 
