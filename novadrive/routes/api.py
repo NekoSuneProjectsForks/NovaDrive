@@ -21,6 +21,7 @@ from novadrive.services.auth_service import AuthService
 from novadrive.services.file_delivery import FileDeliveryService
 from novadrive.services.file_service import AccessError, FileService
 from novadrive.services.share_service import ShareService
+from novadrive.utils.urls import external_url
 from novadrive.utils.validators import ValidationError
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -88,10 +89,9 @@ def sharex_config():
         api_key = AuthService.generate_api_key(current_user)
         session["nova_generated_api_key"] = api_key
 
-    request_url = url_for(
+    request_url = external_url(
         "api.sharex_upload",
         folder_id=folder_id,
-        _external=True,
     )
     payload = {
         "Version": "17.0.0",
@@ -199,9 +199,9 @@ def _default_text_filename(content_type: str) -> str:
 def _build_share_payload(file_record, user: User) -> dict[str, object]:
     share_link = ShareService.create_link(file_record=file_record, user_id=user.id)
     preview_kind = FileDeliveryService.preview_kind(file_record) or "file"
-    share_url = url_for("share.view", token=share_link.token, _external=True)
-    raw_url = url_for("share.raw", token=share_link.token, _external=True)
-    download_url = url_for("share.download", token=share_link.token, _external=True)
+    share_url = external_url("share.view", token=share_link.token)
+    raw_url = external_url("share.raw", token=share_link.token)
+    download_url = external_url("share.download", token=share_link.token)
     return {
         "id": file_record.id,
         "filename": file_record.filename,

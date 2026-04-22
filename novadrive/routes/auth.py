@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import secrets
 from datetime import timedelta
-from urllib.parse import urljoin
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
@@ -13,6 +12,7 @@ from novadrive.forms import DefaultAdminSetupForm, LoginForm, RegistrationForm
 from novadrive.services.auth_service import AuthService
 from novadrive.services.email_service import EmailDeliveryError
 from novadrive.services.verification_service import VerificationService, VerificationTokenError
+from novadrive.utils.urls import external_url
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
@@ -222,18 +222,10 @@ def resend_verification():
 
 def _send_verification_email(user: User) -> None:
     token = VerificationService.generate_email_token(user, current_app.secret_key)
-    verify_url = _external_url("auth.verify_email", token=token)
+    verify_url = external_url("auth.verify_email", token=token)
     VerificationService.send_verification_email(
         user=user,
         verify_url=verify_url,
         config=current_app.config,
     )
     AuthService.note_verification_email_sent(user)
-
-
-def _external_url(endpoint: str, **values) -> str:
-    configured_base = current_app.config["APP_EXTERNAL_URL"]
-    local_path = url_for(endpoint, _external=False, **values)
-    if configured_base:
-        return urljoin(f"{configured_base}/", local_path.lstrip("/"))
-    return url_for(endpoint, _external=True, **values)

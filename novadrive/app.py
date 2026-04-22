@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 from sqlalchemy import inspect, text
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from novadrive.config import Config
 from novadrive.extensions import csrf, db, login_manager, migrate
@@ -18,6 +19,7 @@ from novadrive.services.storage_factory import (
     get_storage_backend,
     storage_backend_label,
 )
+from novadrive.utils.urls import external_url
 from novadrive.utils.logging import configure_logging
 
 load_dotenv()
@@ -26,6 +28,7 @@ load_dotenv()
 def create_app(config_object: type[Config] | None = None) -> Flask:
     app = Flask(__name__, instance_relative_config=False)
     app.config.from_object(config_object or Config)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
     Path(app.config["INSTANCE_DIR"]).mkdir(parents=True, exist_ok=True)
     _ensure_database_storage_path(app)
     app.permanent_session_lifetime = timedelta(
@@ -196,6 +199,7 @@ def _register_template_helpers(app: Flask) -> None:
             "configured_storage_backend_label": storage_backend_label(
                 configured_storage_backend_name(app.config)
             ),
+            "external_url": external_url,
             "requires_default_admin_change": (
                 AuthService.must_change_default_admin_credentials(current_user)
                 if current_user.is_authenticated

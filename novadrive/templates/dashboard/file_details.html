@@ -148,9 +148,9 @@
 
         <div class="mt-6 space-y-3">
           {% for share_link in share_links %}
-            {% set share_url = url_for('share.view', token=share_link.token, _external=True) %}
-            {% set share_raw_url = url_for('share.raw', token=share_link.token, _external=True) %}
-            {% set share_download_url = url_for('share.download', token=share_link.token, _external=True) %}
+            {% set share_url = external_url('share.view', token=share_link.token) %}
+            {% set share_raw_url = external_url('share.raw', token=share_link.token) %}
+            {% set share_download_url = external_url('share.download', token=share_link.token) %}
             <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
               <div class="flex items-start justify-between gap-4">
                 <div class="min-w-0">

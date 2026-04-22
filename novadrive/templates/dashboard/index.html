@@ -250,7 +250,7 @@
         <div class="mt-5 space-y-4">
           <div class="rounded-3xl border border-white/10 bg-white/5 p-4">
             <p class="text-xs uppercase tracking-[0.24em] text-slate-500">Upload endpoint</p>
-            <p class="mt-2 break-all text-sm text-white">{{ url_for('api.sharex_upload', folder_id=current_folder.id, _external=True) }}</p>
+            <p class="mt-2 break-all text-sm text-white">{{ external_url('api.sharex_upload', folder_id=current_folder.id) }}</p>
             <p class="mt-2 text-xs leading-6 text-slate-500">Downloading a fresh `.sxcu` will embed the current plaintext key. If this browser no longer has it, NovaDrive rotates the key automatically.</p>
           </div>
 
@@ -305,7 +305,7 @@
         <div class="mt-5 space-y-4">
           <div class="rounded-3xl border border-white/10 bg-white/5 p-4">
             <p class="text-xs uppercase tracking-[0.24em] text-slate-500">Endpoint</p>
-            <p class="mt-2 break-all text-sm text-white">{{ url_for('webdav.dispatch', resource_path='', _external=True) }}</p>
+            <p class="mt-2 break-all text-sm text-white">{{ external_url('webdav.dispatch', resource_path='') }}</p>
           </div>
           <div class="rounded-3xl border border-white/10 bg-white/5 p-4 text-sm leading-7 text-slate-300">
             <p>Username: <span class="text-white">{{ current_user.username }}</span> or <span class="text-white">{{ current_user.email }}</span></p>
