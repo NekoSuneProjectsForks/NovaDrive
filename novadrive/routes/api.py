@@ -410,7 +410,7 @@ def _media_url(file_record: File) -> str:
     api_key = _api_key_from_request()
     if api_key:
         values["api_key"] = api_key
-    return external_url("api.media_raw", **values)
+    return url_for("api.media_raw", **values)
 
 
 def _media_kind(file_record: File) -> str | None:

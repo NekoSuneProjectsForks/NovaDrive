@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import random
 
+from flask import url_for
 from sqlalchemy import or_
 
 from novadrive.extensions import db
 from novadrive.models import File, ObsOverlaySettings, User, utcnow
 from novadrive.services.file_delivery import FileDeliveryService
 from novadrive.services.file_service import AccessError, FileService
-from novadrive.utils.urls import external_url
 
 
 BACKGROUND_MEDIA_KINDS = {"image", "video"}
@@ -179,7 +179,7 @@ class OverlayService:
         }
         if api_key:
             media_url_values["api_key"] = api_key
-        raw_url = external_url("api.media_raw", **media_url_values)
+        raw_url = url_for("api.media_raw", **media_url_values)
         return {
             "id": file_record.id,
             "filename": file_record.filename,

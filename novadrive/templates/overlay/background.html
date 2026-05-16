@@ -103,6 +103,7 @@
                 video.muted = true;
                 video.playsInline = true;
                 video.controls = false;
+                video.addEventListener("error", () => removeFailedSlide(video));
                 return video;
             }
 
@@ -110,6 +111,7 @@
                 const img = document.createElement("img");
                 img.src = item.raw_url || item.url;
                 img.alt = item.filename || "";
+                img.addEventListener("error", () => removeFailedSlide(img));
                 return img;
             }
 
@@ -140,6 +142,20 @@
         function pauseIfVideo(slide) {
             if (slide.tagName !== "VIDEO") return;
             slide.pause();
+        }
+
+        function removeFailedSlide(slide) {
+            const wasActive = slide.classList.contains("active");
+            slide.remove();
+            const slides = document.querySelectorAll(".slides img, .slides video");
+            if (!slides.length) {
+                if (intervalId) clearInterval(intervalId);
+                return;
+            }
+            if (!wasActive) return;
+            currentIndex = currentIndex % slides.length;
+            slides[currentIndex].classList.add("active");
+            playIfVideo(slides[currentIndex]);
         }
 
         fetchImages();
