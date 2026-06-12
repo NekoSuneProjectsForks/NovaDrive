@@ -345,6 +345,29 @@ That value is used when NovaDrive generates:
 - public share, raw, and download links
 - WebDAV endpoint examples shown in the UI
 
+### Serving the same instance on multiple hosts (domain + LAN)
+
+`APP_EXTERNAL_URL` pins **one** canonical host. If you also reach NovaDrive
+directly on your LAN (for example `http://192.168.1.107:5666` while the public
+URL is `https://i.nekosunevr.co.uk`), add the extra hosts to `APP_EXTERNAL_URLS`:
+
+```text
+APP_EXTERNAL_URL=https://i.nekosunevr.co.uk
+APP_EXTERNAL_URLS=192.168.1.107:5666, novadrive.local:5666
+```
+
+- The list is comma or space separated and uses the same scheme inference
+  (domains → `https://`, IPs/`localhost` → `http://`; include the scheme to force it).
+- When a request comes in on a listed host, ShareX uploads, share links, and
+  WebDAV all return URLs built from **that** host, so both of these work and
+  return links that resolve from where you connected:
+  - `http://i.nekosunevr.co.uk/api/sharex/upload?folder_id=1`
+  - `http://192.168.1.107:5666/api/sharex/upload?folder_id=1`
+- Out-of-band links (password reset and verification emails) always use the
+  canonical `APP_EXTERNAL_URL`, so an unlisted/spoofed `Host` header cannot
+  redirect them.
+- Hosts that are **not** listed fall back to `APP_EXTERNAL_URL` as before.
+
 ## Discord setup guide
 
 Skip this entire section if `STORAGE_BACKEND=s3`.
@@ -374,7 +397,8 @@ Recommended bot permissions:
 | --- | --- | --- |
 | `SECRET_KEY` | Flask session signing secret | `super-long-random-secret` |
 | `DATABASE_URL` | SQLAlchemy database URL | `sqlite:///instance/novadrive.db` |
-| `APP_EXTERNAL_URL` | Public base URL used in verification emails, ShareX configs, and generated share links. If no scheme is provided, NovaDrive infers `https://` for domains and `http://` for IPs or localhost. | `drive.example.com` |
+| `APP_EXTERNAL_URL` | Canonical public base URL used in verification emails, ShareX configs, and generated share links. If no scheme is provided, NovaDrive infers `https://` for domains and `http://` for IPs or localhost. | `drive.example.com` |
+| `APP_EXTERNAL_URLS` | Extra hosts (comma/space separated) that may also serve NovaDrive. Requests arriving on a listed host get ShareX/share/WebDAV links built from that host, so a public domain and a LAN address both work. Same scheme inference as `APP_EXTERNAL_URL`. | `192.168.1.107:5666, novadrive.local:5666` |
 | `CLOUDFLARE_TUNNEL_COMPAT` | Clamp uploads to a Cloudflare-compatible request size before Cloudflare returns `413 Payload Too Large` | `true` |
 | `CLOUDFLARE_TUNNEL_PLAN` | Cloudflare upload plan preset: `free`, `pro`, `business`, or `enterprise`. NovaDrive applies a built-in safe request cap for the selected plan. | `free` |
 | `MAX_UPLOAD_SIZE_BYTES` | Max allowed upload request size through Flask before any optional Cloudflare compatibility clamp is applied | `536870912` |
@@ -458,6 +482,7 @@ Important notes:
 
 - ShareX upload endpoints are `POST` only.
 - If the app is behind HTTPS or a reverse proxy, set `APP_EXTERNAL_URL` before downloading the `.sxcu` file.
+- To upload from both a public domain and a LAN address, list the extra hosts in `APP_EXTERNAL_URLS` (see [Serving the same instance on multiple hosts](#serving-the-same-instance-on-multiple-hosts-domain--lan)). The returned `url` then always matches the host you uploaded to.
 - If you change the public domain, protocol, or proxy config later, download a fresh `.sxcu` and re-import it into ShareX.
 - If ShareX reports HTML or `405 Method Not Allowed` instead of JSON, it is usually still hitting an old non-HTTPS uploader URL and getting redirected before the upload request reaches NovaDrive correctly.
 - If you deploy behind Cloudflare Tunnel, enable `CLOUDFLARE_TUNNEL_COMPAT=true` so NovaDrive caps uploads before Cloudflare rejects the request body.
@@ -493,6 +518,85 @@ Use these settings in a WebDAV-capable client:
 - Username: your NovaDrive username or email
 - Password: your generated WebDAV app password from the NovaDrive dashboard
 
+You can connect over either the public domain or a LAN address — both work as
+long as the LAN host is listed in `APP_EXTERNAL_URLS` (see
+[Serving the same instance on multiple hosts](#serving-the-same-instance-on-multiple-hosts-domain--lan)):
+
+- `https://i.nekosunevr.co.uk/dav/`
+- `http://192.168.1.107:5666/dav/`
+
+> First, generate a **WebDAV app password** in the dashboard (Account Security →
+> WebDAV App Password). Your normal login password does **not** work over WebDAV —
+> this is the most common reason a mount fails.
+
+### Map on Windows
+
+The built-in Windows WebDAV redirector (used by File Explorer and `net use`)
+needs the WebClient service running:
+
+```powershell
+Start-Service WebClient
+```
+
+Then map the drive (PowerShell or `cmd`):
+
+```powershell
+net use Z: https://i.nekosunevr.co.uk/dav/ /user:yourname yourWebDavAppPassword /persistent:yes
+```
+
+Or in File Explorer: **This PC → Map network drive → Folder:**
+`https://i.nekosunevr.co.uk/dav/`, tick **Connect using different credentials**,
+then enter your username + WebDAV app password.
+
+Windows gotchas:
+
+- **Plain HTTP (LAN IP):** Windows refuses Basic auth over non-HTTPS by default.
+  To mount `http://192.168.1.107:5666/dav/`, set the redirector to allow it
+  (run as Administrator, then reboot or restart the WebClient service):
+
+  ```powershell
+  Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters" BasicAuthLevel 2
+  ```
+
+- **50 MB upload cap:** the redirector blocks larger files until you raise
+  `FileSizeLimitInBytes` (max `0xFFFFFFFF` ≈ 4 GB), then restart WebClient:
+
+  ```powershell
+  Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters" FileSizeLimitInBytes 0xFFFFFFFF
+  ```
+
+- Disconnect with `net use Z: /delete`.
+
+### Map on Linux
+
+**GNOME Files / KDE Dolphin** — type a URL into the location bar:
+
+- `davs://i.nekosunevr.co.uk/dav/` (HTTPS)
+- `dav://192.168.1.107:5666/dav/` (plain HTTP, LAN)
+
+Enter your username and WebDAV app password when prompted.
+
+**Mount with davfs2** (persistent, command line):
+
+```bash
+sudo apt install davfs2          # Debian/Ubuntu (or dnf/pacman equivalent)
+sudo mkdir -p /mnt/novadrive
+sudo mount -t davfs https://i.nekosunevr.co.uk/dav/ /mnt/novadrive
+# prompts for username + WebDAV app password
+```
+
+To avoid the prompt, add the credentials to `~/.davfs2/secrets` (mode `600`):
+
+```text
+https://i.nekosunevr.co.uk/dav/ yourname yourWebDavAppPassword
+```
+
+Or add an `/etc/fstab` entry for boot-time mounting:
+
+```text
+https://i.nekosunevr.co.uk/dav/ /mnt/novadrive davfs user,noauto 0 0
+```
+
 Notes:
 
 - WebDAV only exposes the authenticated user's own drive.
@@ -501,7 +605,7 @@ Notes:
 - If email verification is required, the account must be verified before WebDAV login works.
 - Browser TOTP 2FA currently protects the web sign-in flow only. WebDAV uses username/email plus the dedicated app password.
 - If the account reaches its storage quota, WebDAV uploads are blocked until an admin raises the limit or files are deleted.
-- Use the same public HTTPS host you set in `APP_EXTERNAL_URL` if the app is behind a reverse proxy.
+- NovaDrive advertises lock support (DAV class `1, 2`) so Windows/Office can save, but locks are not enforced — avoid concurrent edits of the same file from multiple clients.
 
 ## Storage model details
 

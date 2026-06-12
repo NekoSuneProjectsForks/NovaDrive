@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import uuid
 from dataclasses import dataclass
 from email.utils import format_datetime
 from urllib.parse import quote, unquote, urlparse
@@ -371,6 +372,47 @@ class WebDavService:
     def relative_path_for_file(user: User, file_record: File) -> str:
         folder_path = WebDavService.relative_path_for_folder(user, file_record.folder)
         return "/".join([part for part in [folder_path, file_record.filename] if part])
+
+    @staticmethod
+    def build_proppatch_response(user: User, resource_path: str) -> bytes:
+        # NovaDrive does not persist arbitrary dead properties (e.g. the Win32
+        # timestamps Windows tries to set), but acknowledging them keeps the
+        # redirector happy so writes complete. Report the resource as updated.
+        resource = WebDavService.resolve_resource(user, resource_path)
+        normalized = WebDavService.normalize_path(resource_path)
+        multistatus = Element("{DAV:}multistatus")
+        response = SubElement(multistatus, "{DAV:}response")
+        href = SubElement(response, "{DAV:}href")
+        href.text = WebDavService.absolute_href(normalized, is_collection=resource.is_collection)
+        propstat = SubElement(response, "{DAV:}propstat")
+        SubElement(propstat, "{DAV:}prop")
+        status = SubElement(propstat, "{DAV:}status")
+        status.text = "HTTP/1.1 200 OK"
+        return tostring(multistatus, encoding="utf-8", xml_declaration=True)
+
+    @staticmethod
+    def build_lock_response(resource_path: str) -> tuple[bytes, str]:
+        # Synthetic lock: NovaDrive does not enforce WebDAV locks, but advertising
+        # class-2 support and returning a token lets Windows/Office proceed with a
+        # PUT. The path may not exist yet (clients LOCK before creating a file),
+        # so the token is fabricated rather than resolved against storage.
+        lock_token = f"opaquelocktoken:{uuid.uuid4()}"
+        normalized = WebDavService.normalize_path(resource_path)
+
+        prop = Element("{DAV:}prop")
+        lockdiscovery = SubElement(prop, "{DAV:}lockdiscovery")
+        activelock = SubElement(lockdiscovery, "{DAV:}activelock")
+        SubElement(SubElement(activelock, "{DAV:}locktype"), "{DAV:}write")
+        SubElement(SubElement(activelock, "{DAV:}lockscope"), "{DAV:}exclusive")
+        SubElement(activelock, "{DAV:}depth").text = "infinity"
+        SubElement(activelock, "{DAV:}timeout").text = "Second-3600"
+        locktoken_el = SubElement(activelock, "{DAV:}locktoken")
+        SubElement(locktoken_el, "{DAV:}href").text = lock_token
+        lockroot = SubElement(activelock, "{DAV:}lockroot")
+        SubElement(lockroot, "{DAV:}href").text = WebDavService.absolute_href(
+            normalized, is_collection=False
+        )
+        return tostring(prop, encoding="utf-8", xml_declaration=True), lock_token
 
     @staticmethod
     def absolute_href(relative_path: str, *, is_collection: bool) -> str:

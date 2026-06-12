@@ -84,6 +84,30 @@ def _normalize_external_url(value: str | None) -> str:
     ).rstrip("/")
 
 
+def _external_url_map(primary: str, extra: str | None) -> dict[str, str]:
+    """Map each known external host (``host`` or ``host:port``) to its base URL.
+
+    The primary ``APP_EXTERNAL_URL`` is always included. Additional hosts listed
+    in ``APP_EXTERNAL_URLS`` (comma/space separated) let NovaDrive serve matching
+    request hosts with URLs built from that host — so the public domain and a
+    LAN address such as ``192.168.1.107:5666`` both return links that resolve.
+    """
+    mapping: dict[str, str] = {}
+    candidates: list[str] = []
+    if primary:
+        candidates.append(primary)
+    for raw in (extra or "").replace(",", " ").split():
+        normalized = _normalize_external_url(raw)
+        if normalized:
+            candidates.append(normalized)
+
+    for base in candidates:
+        host = urlsplit(base).netloc.lower()
+        if host and host not in mapping:
+            mapping[host] = base
+    return mapping
+
+
 def _cloudflare_safe_upload_limit_bytes(plan: str) -> int:
     limits = {
         "free": 99_000_000,
@@ -113,6 +137,8 @@ class Config:
     BASE_DIR = Path(__file__).resolve().parent.parent
     INSTANCE_DIR = BASE_DIR / "instance"
     APP_EXTERNAL_URL = _normalize_external_url(os.getenv("APP_EXTERNAL_URL"))
+    APP_EXTERNAL_URLS = os.getenv("APP_EXTERNAL_URLS", "")
+    APP_EXTERNAL_URL_MAP = _external_url_map(APP_EXTERNAL_URL, APP_EXTERNAL_URLS)
 
     SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
     SQLALCHEMY_DATABASE_URI = _resolve_database_uri(BASE_DIR, INSTANCE_DIR)
