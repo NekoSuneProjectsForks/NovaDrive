@@ -98,8 +98,9 @@ def _parse_upload_providers(raw: str | None) -> list[dict]:
                 "url": url,
                 "field": str(entry.get("field") or "file").strip(),
                 "result": str(entry.get("result") or default_result).strip(),
+                "raw": bool(entry.get("raw")),
                 "max_size": int(entry.get("max_size") or 0),
-                "headers": headers if isinstance(headers, dict) else {},
+                "headers": {str(k): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {},
             }
         )
     return providers

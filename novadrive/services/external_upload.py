@@ -181,10 +181,13 @@ def _process_job(config, job_id: int) -> None:
     total = int(file_record.total_size or 0)
     timeout = (15, int(config.get("EXTERNAL_UPLOAD_TIMEOUT_SECONDS", 1800)))
     reader = _StorageReader(file_record, config, total, job_id)
+    filename = file_record.filename
+    request_url = _resolve_url(provider, filename)
     try:
-        response = _send(provider, file_record.filename, reader, timeout)
+        response = _send(provider, request_url, filename, file_record.sha256 or "", reader, timeout)
         response.raise_for_status()
-        link = _parse_result(provider.get("result") or "text", response)
+        result_spec = provider.get("result") or "text"
+        link = request_url if result_spec == "requesturl" else _parse_result(result_spec, response)
         if not link:
             raise ExternalUploadError(f"{provider['name']} did not return a download link.")
         _finish(job_id, ExternalUpload.STATUS_COMPLETED, result_url=link, progress_bytes=total)
@@ -200,15 +203,33 @@ def _process_job(config, job_id: int) -> None:
         _set_status(job_id, ExternalUpload.STATUS_FAILED, f"The upload host could not be reached: {exc}")
 
 
-def _send(provider: dict, filename: str, reader, timeout):
+def _resolve_url(provider: dict, filename: str) -> str:
+    return (provider.get("url") or "").replace("{filename}", quote(filename, safe=""))
+
+
+def _resolve_headers(provider: dict, filename: str, file_sha: str) -> dict:
+    headers = {}
+    for key, value in (provider.get("headers") or {}).items():
+        headers[key] = (
+            str(value)
+            .replace("{filename}", quote(filename, safe=""))
+            .replace("{sha256}", file_sha)
+        )
+    return headers
+
+
+def _send(provider: dict, url: str, filename: str, file_sha: str, reader, timeout):
     if provider.get("type") == "gofile":
         return _send_gofile(provider, filename, reader, timeout)
 
-    url = provider["url"].replace("{filename}", quote(filename, safe=""))
-    headers = dict(provider.get("headers") or {})
+    headers = _resolve_headers(provider, filename, file_sha)
     if provider.get("method") == "PUT":
         headers.setdefault("Content-Length", str(len(reader)))
         return requests.put(url, data=reader, headers=headers, timeout=timeout)
+    if provider.get("raw"):
+        # Raw binary body POST (e.g. filebin's --data-binary), not multipart.
+        headers.setdefault("Content-Length", str(len(reader)))
+        return requests.post(url, data=reader, headers=headers, timeout=timeout)
 
     return _post_multipart(url, provider.get("field") or "file", filename, reader, headers, timeout)
 
