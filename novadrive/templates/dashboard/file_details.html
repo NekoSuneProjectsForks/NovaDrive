@@ -193,8 +193,14 @@
             </select>
             <button type="submit" class="nova-button-primary">Upload</button>
           </form>
+        {% elif external_upload_all_providers %}
+          <p class="mt-4 text-sm text-amber-200">
+            This file is {{ file.total_size|filesize }}, larger than every configured host's limit:
+            {% for provider in external_upload_all_providers %}{{ provider.name }} ({{ provider.max_size|filesize if provider.max_size else 'unlimited' }}){% if not loop.last %}, {% endif %}{% endfor %}.
+          </p>
+          <p class="mt-2 text-xs text-slate-500">Add a host with a higher (or 0 = unlimited) <span class="font-mono">max_size</span> in <span class="font-mono">EXTERNAL_UPLOAD_PROVIDERS</span> — e.g. a self-hosted transfer.sh.</p>
         {% else %}
-          <p class="mt-4 text-sm text-amber-200">No configured host accepts a file this size{% if not external_upload_providers %} (or none are configured){% endif %}.</p>
+          <p class="mt-4 text-sm text-amber-200">No temp hosts are configured. Set <span class="font-mono">EXTERNAL_UPLOAD_PROVIDERS</span> in your environment.</p>
         {% endif %}
         <div class="mt-5 space-y-2" data-extupload-list></div>
       </div>

@@ -134,6 +134,7 @@ def details(file_id: int):
         external_upload_providers=external_upload.providers_for_file(
             current_app.config, file_record.total_size
         ),
+        external_upload_all_providers=external_upload.available_providers(current_app.config),
         admin_target_user=file_record.owner
         if current_user.is_admin and current_shared_drive is None and file_record.owner_id != current_user.id
         else None,

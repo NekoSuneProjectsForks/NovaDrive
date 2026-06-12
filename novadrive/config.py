@@ -76,7 +76,10 @@ def _parse_upload_providers(raw: str | None) -> list[dict]:
             continue
         name = str(entry.get("name") or "").strip()
         url = str(entry.get("url") or "").strip()
-        if not name or not url:
+        provider_type = str(entry.get("type") or "").strip().lower()
+        # A built-in type (e.g. "gofile") supplies its own endpoint, so a url is
+        # only required for generic PUT/POST template hosts.
+        if not name or (not url and not provider_type):
             continue
         provider_id = _slug(name)
         base, counter = provider_id, 2
@@ -85,14 +88,16 @@ def _parse_upload_providers(raw: str | None) -> list[dict]:
             counter += 1
         seen.add(provider_id)
         headers = entry.get("headers")
+        default_result = "json:data.downloadPage" if provider_type == "gofile" else "text"
         providers.append(
             {
                 "id": provider_id,
                 "name": name,
+                "type": provider_type,
                 "method": str(entry.get("method") or "POST").strip().upper(),
                 "url": url,
                 "field": str(entry.get("field") or "file").strip(),
-                "result": str(entry.get("result") or "text").strip(),
+                "result": str(entry.get("result") or default_result).strip(),
                 "max_size": int(entry.get("max_size") or 0),
                 "headers": headers if isinstance(headers, dict) else {},
             }

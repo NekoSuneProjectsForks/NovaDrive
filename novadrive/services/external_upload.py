@@ -201,21 +201,41 @@ def _process_job(config, job_id: int) -> None:
 
 
 def _send(provider: dict, filename: str, reader, timeout):
+    if provider.get("type") == "gofile":
+        return _send_gofile(provider, filename, reader, timeout)
+
     url = provider["url"].replace("{filename}", quote(filename, safe=""))
     headers = dict(provider.get("headers") or {})
     if provider.get("method") == "PUT":
         headers.setdefault("Content-Length", str(len(reader)))
         return requests.put(url, data=reader, headers=headers, timeout=timeout)
 
-    field = provider.get("field") or "file"
+    return _post_multipart(url, provider.get("field") or "file", filename, reader, headers, timeout)
+
+
+def _post_multipart(url, field, filename, reader, headers, timeout):
     if MultipartEncoder is not None:
-        encoder = MultipartEncoder(
-            fields={field: (filename, reader, "application/octet-stream")}
-        )
+        encoder = MultipartEncoder(fields={field: (filename, reader, "application/octet-stream")})
+        headers = dict(headers)
         headers["Content-Type"] = encoder.content_type
         return requests.post(url, data=encoder, headers=headers, timeout=timeout)
     # Fallback: requests streams a file-like multipart part from the reader.
     return requests.post(url, files={field: (filename, reader, "application/octet-stream")}, headers=headers, timeout=timeout)
+
+
+def _send_gofile(provider: dict, filename: str, reader, timeout):
+    """GoFile needs a two-step flow: pick an upload server, then POST the file."""
+    try:
+        servers_resp = requests.get("https://api.gofile.io/servers", timeout=(15, 30))
+        servers_resp.raise_for_status()
+        servers = (((servers_resp.json() or {}).get("data") or {}).get("servers") or [])
+    except (requests.RequestException, ValueError) as exc:
+        raise ExternalUploadError(f"GoFile could not be reached: {exc}") from exc
+    server = servers[0].get("name") if servers else None
+    if not server:
+        raise ExternalUploadError("GoFile returned no upload server.")
+    url = f"https://{server}.gofile.io/contents/uploadfile"
+    return _post_multipart(url, provider.get("field") or "file", filename, reader, dict(provider.get("headers") or {}), timeout)
 
 
 def _parse_result(spec: str, response: requests.Response) -> str | None:
