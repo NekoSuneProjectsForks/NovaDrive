@@ -33,6 +33,38 @@ class AccessError(PermissionError):
 
 
 class FileService:
+    DOWNLOADS_FOLDER_NAME = "Downloads"
+
+    @staticmethod
+    def get_or_create_downloads_folder(user: User) -> Folder:
+        """Return the user's personal ``Downloads`` folder, creating it if absent.
+
+        This is the default destination for remote/torrent downloads.
+        """
+        root = AuthService.get_root_folder(user)
+        existing = (
+            Folder.query.filter_by(
+                parent_id=root.id,
+                owner_id=user.id,
+                shared_drive_id=None,
+                deleted_at=None,
+                name=FileService.DOWNLOADS_FOLDER_NAME,
+            )
+            .order_by(Folder.id.asc())
+            .first()
+        )
+        if existing is not None:
+            return existing
+        folder = Folder(
+            name=FileService.DOWNLOADS_FOLDER_NAME,
+            parent_id=root.id,
+            owner_id=user.id,
+            shared_drive_id=None,
+        )
+        db.session.add(folder)
+        db.session.commit()
+        return folder
+
     @staticmethod
     def current_usage_bytes(user: User | None = None, shared_drive: SharedDrive | None = None) -> int:
         usage_query = db.session.query(func.coalesce(func.sum(File.total_size), 0)).filter(
@@ -371,7 +403,6 @@ class FileService:
         FileService._ensure_can_write_folder(user, folder)
         safe_original_filename = normalize_filename(upload.filename)
         mime_type = upload.mimetype or mimetypes.guess_type(safe_original_filename)[0] or "application/octet-stream"
-        chunk_size = config["DISCORD_CHUNK_SIZE_BYTES"]
         max_memory = config["SPOOL_MAX_MEMORY_BYTES"]
 
         spool = tempfile.SpooledTemporaryFile(max_size=max_memory, mode="w+b")
@@ -400,6 +431,93 @@ class FileService:
             digest.update(buffer)
             spool.write(buffer)
 
+        return FileService._persist_file(
+            user,
+            folder,
+            spool,
+            total_size=total_size,
+            sha_hex=digest.hexdigest(),
+            safe_filename=safe_original_filename,
+            mime_type=mime_type,
+            config=config,
+            existing_file=existing_file,
+        )
+
+    @staticmethod
+    def store_stream(
+        user: User,
+        folder: Folder,
+        source_stream: BinaryIO,
+        *,
+        filename: str,
+        config,
+        mime_type: str | None = None,
+    ) -> File:
+        """Ingest an arbitrary binary stream as a new file.
+
+        This is the shared entry point for non-browser sources such as remote
+        URL downloads. The stream is buffered to a spool while its size and
+        SHA-256 are computed, then handed to the same storage path used by
+        browser uploads. The absolute ``MAX_UPLOAD_SIZE_BYTES`` ceiling is
+        enforced (the Cloudflare-proxied cap does not apply to server-side
+        downloads).
+        """
+        FileService._ensure_can_write_folder(user, folder)
+        safe_filename = normalize_filename(filename)
+        resolved_mime = (
+            mime_type
+            or mimetypes.guess_type(safe_filename)[0]
+            or "application/octet-stream"
+        )
+        max_upload_size = config["MAX_UPLOAD_SIZE_BYTES"]
+
+        spool = tempfile.SpooledTemporaryFile(max_size=config["SPOOL_MAX_MEMORY_BYTES"], mode="w+b")
+        digest = hashlib.sha256()
+        total_size = 0
+        while True:
+            buffer = source_stream.read(1024 * 1024)
+            if not buffer:
+                break
+            total_size += len(buffer)
+            if total_size > max_upload_size:
+                spool.close()
+                raise ValidationError(
+                    "The remote file exceeds the maximum allowed size of "
+                    f"{FileService._format_bytes(max_upload_size)}."
+                )
+            digest.update(buffer)
+            spool.write(buffer)
+
+        return FileService._persist_file(
+            user,
+            folder,
+            spool,
+            total_size=total_size,
+            sha_hex=digest.hexdigest(),
+            safe_filename=safe_filename,
+            mime_type=resolved_mime,
+            config=config,
+        )
+
+    @staticmethod
+    def _persist_file(
+        user: User,
+        folder: Folder,
+        spool,
+        *,
+        total_size: int,
+        sha_hex: str,
+        safe_filename: str,
+        mime_type: str,
+        config,
+        existing_file: File | None = None,
+    ) -> File:
+        """Quota-check a buffered spool and store it via the active backend.
+
+        Shared by browser uploads and remote downloads. ``spool`` must be a
+        seekable binary file; it is always closed before returning.
+        """
+        chunk_size = config["DISCORD_CHUNK_SIZE_BYTES"]
         FileService._ensure_storage_quota(
             user,
             total_size,
@@ -414,16 +532,18 @@ class FileService:
             else configured_storage_backend_name(config)
         )
         backend = get_storage_backend(config, backend_name=backend_name)
+        whole_file = getattr(backend, "whole_file", False)
+        manifest_chunk_size = total_size if whole_file else chunk_size
         file_record = existing_file or File(
             folder_id=folder.id,
             owner_id=user.id if folder.shared_drive_id else folder.owner_id,
             shared_drive_id=folder.shared_drive_id,
-            filename=FileService._make_unique_filename(folder.id, safe_original_filename),
-            original_filename=safe_original_filename,
+            filename=FileService._make_unique_filename(folder.id, safe_filename),
+            original_filename=safe_filename,
             mime_type=mime_type,
             total_size=total_size,
             total_chunks=0,
-            sha256=digest.hexdigest(),
+            sha256=sha_hex,
             upload_status="uploading",
         )
         db.session.add(file_record)
@@ -432,11 +552,11 @@ class FileService:
         if not file_record.manifest:
             file_record.manifest = FileManifest(
                 storage_backend=backend_name,
-                chunk_size=chunk_size,
+                chunk_size=manifest_chunk_size,
                 upload_session_token=secrets.token_urlsafe(18),
                 metadata_json=json.dumps(
                     {
-                        "original_filename": safe_original_filename,
+                        "original_filename": safe_filename,
                         "mime_type": mime_type,
                     }
                 ),
@@ -447,37 +567,46 @@ class FileService:
         uploaded_chunk_count = 0
 
         try:
-            for chunk_index, chunk_bytes in iter_file_chunks(spool, chunk_size):
-                if chunk_index in existing_chunks:
-                    uploaded_chunk_count += 1
-                    continue
+            if whole_file:
+                uploaded_chunk_count = FileService._store_whole_file(
+                    backend,
+                    file_record,
+                    spool,
+                    total_size,
+                    existing_chunks,
+                )
+            else:
+                for chunk_index, chunk_bytes in iter_file_chunks(spool, chunk_size):
+                    if chunk_index in existing_chunks:
+                        uploaded_chunk_count += 1
+                        continue
 
-                channel_id = backend.choose_channel(file_record.id, chunk_index)
-                chunk_sha = sha256_bytes(chunk_bytes)
-                storage_payload = backend.upload_chunk(
-                    chunk_bytes=chunk_bytes,
-                    filename=f"{file_record.id}-{chunk_index:06d}.part",
-                    sha256=chunk_sha,
-                    channel_id=channel_id,
-                    metadata={
-                        "file_id": file_record.id,
-                        "chunk_index": chunk_index,
-                        "filename": file_record.filename,
-                    },
-                )
-                file_chunk = FileChunk(
-                    file_id=file_record.id,
-                    chunk_index=chunk_index,
-                    discord_channel_id=str(storage_payload["channel_id"]),
-                    discord_message_id=str(storage_payload["message_id"]),
-                    discord_attachment_url=storage_payload["attachment_url"],
-                    discord_attachment_filename=storage_payload.get("attachment_filename"),
-                    chunk_size=len(chunk_bytes),
-                    sha256=chunk_sha,
-                )
-                db.session.add(file_chunk)
-                db.session.commit()
-                uploaded_chunk_count += 1
+                    channel_id = backend.choose_channel(file_record.id, chunk_index)
+                    chunk_sha = sha256_bytes(chunk_bytes)
+                    storage_payload = backend.upload_chunk(
+                        chunk_bytes=chunk_bytes,
+                        filename=f"{file_record.id}-{chunk_index:06d}.part",
+                        sha256=chunk_sha,
+                        channel_id=channel_id,
+                        metadata={
+                            "file_id": file_record.id,
+                            "chunk_index": chunk_index,
+                            "filename": file_record.filename,
+                        },
+                    )
+                    file_chunk = FileChunk(
+                        file_id=file_record.id,
+                        chunk_index=chunk_index,
+                        discord_channel_id=str(storage_payload["channel_id"]),
+                        discord_message_id=str(storage_payload["message_id"]),
+                        discord_attachment_url=storage_payload["attachment_url"],
+                        discord_attachment_filename=storage_payload.get("attachment_filename"),
+                        chunk_size=len(chunk_bytes),
+                        sha256=chunk_sha,
+                    )
+                    db.session.add(file_chunk)
+                    db.session.commit()
+                    uploaded_chunk_count += 1
 
             file_record.total_chunks = uploaded_chunk_count
             file_record.upload_status = "complete"
@@ -499,12 +628,63 @@ class FileService:
             )
             return file_record
         except Exception:
-            logger.exception("File upload failed for %s", safe_original_filename)
+            logger.exception("File store failed for %s", safe_filename)
             file_record.upload_status = "failed"
             db.session.commit()
             raise
         finally:
             spool.close()
+
+    @staticmethod
+    def _store_whole_file(
+        backend,
+        file_record: File,
+        spool,
+        total_size: int,
+        existing_chunks: dict,
+    ) -> int:
+        """Upload a file as a single object (used by backends like S3).
+
+        Returns the number of stored chunks (always 1). Any previously stored
+        chunk records are removed first so re-uploads overwrite cleanly.
+        """
+        for chunk in list(existing_chunks.values()):
+            try:
+                backend.delete_chunk(chunk.discord_channel_id, chunk.discord_message_id)
+            except StorageBackendError:
+                logger.warning(
+                    "Failed to delete previous object for file %s before re-upload",
+                    file_record.id,
+                )
+            db.session.delete(chunk)
+        db.session.flush()
+
+        channel_id = backend.choose_channel(file_record.id, 0)
+        spool.seek(0)
+        storage_payload = backend.upload_whole(
+            stream=spool,
+            filename=f"{file_record.id}-000000.part",
+            sha256=file_record.sha256,
+            channel_id=channel_id,
+            metadata={
+                "file_id": file_record.id,
+                "chunk_index": 0,
+                "filename": file_record.filename,
+            },
+        )
+        file_chunk = FileChunk(
+            file_id=file_record.id,
+            chunk_index=0,
+            discord_channel_id=str(storage_payload["channel_id"]),
+            discord_message_id=str(storage_payload["message_id"]),
+            discord_attachment_url=storage_payload["attachment_url"],
+            discord_attachment_filename=storage_payload.get("attachment_filename"),
+            chunk_size=total_size,
+            sha256=file_record.sha256,
+        )
+        db.session.add(file_chunk)
+        db.session.commit()
+        return 1
 
     @staticmethod
     def rebuild_file(file_record: File, config) -> tuple[BinaryIO, str]:
@@ -530,18 +710,32 @@ class FileService:
         output = tempfile.SpooledTemporaryFile(max_size=config["SPOOL_MAX_MEMORY_BYTES"], mode="w+b")
         digest = hashlib.sha256()
 
+        # Files stored as a single object (e.g. S3) are streamed straight into
+        # the output so multi-GiB downloads never buffer the whole body in
+        # memory. Legacy multi-chunk files keep using the per-chunk path.
+        whole_file = getattr(backend, "whole_file", False) and len(chunk_records) == 1
+
         try:
-            for chunk in chunk_records:
-                chunk_bytes = backend.fetch_chunk(
+            if whole_file:
+                chunk = chunk_records[0]
+                backend.fetch_whole(
                     channel_id=chunk.discord_channel_id,
                     message_id=chunk.discord_message_id,
+                    dest_stream=output,
+                    hasher=digest,
                 )
-                if sha256_bytes(chunk_bytes) != chunk.sha256:
-                    raise ChunkValidationError(
-                        f"Checksum mismatch while rebuilding chunk {chunk.chunk_index}."
+            else:
+                for chunk in chunk_records:
+                    chunk_bytes = backend.fetch_chunk(
+                        channel_id=chunk.discord_channel_id,
+                        message_id=chunk.discord_message_id,
                     )
-                digest.update(chunk_bytes)
-                output.write(chunk_bytes)
+                    if sha256_bytes(chunk_bytes) != chunk.sha256:
+                        raise ChunkValidationError(
+                            f"Checksum mismatch while rebuilding chunk {chunk.chunk_index}."
+                        )
+                    digest.update(chunk_bytes)
+                    output.write(chunk_bytes)
 
             final_hash = digest.hexdigest()
             if final_hash != file_record.sha256:

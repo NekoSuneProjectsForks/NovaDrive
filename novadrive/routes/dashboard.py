@@ -39,6 +39,8 @@ def index():
         type_filter=type_filter,
     )
 
+    downloads_folder = FileService.get_or_create_downloads_folder(current_user)
+
     recent_activity = (
         ActivityLog.query.filter_by(user_id=current_user.id)
         .order_by(ActivityLog.created_at.desc())
@@ -67,6 +69,7 @@ def index():
         usage=FileService.usage_summary(current_user),
         recent_activity=recent_activity,
         folder_options=FileService.folder_options(current_user),
+        default_remote_folder_id=downloads_folder.id,
         query=query,
         scope=scope,
         type_filter=type_filter,

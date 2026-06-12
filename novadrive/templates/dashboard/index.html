@@ -166,6 +166,48 @@
         </form>
       </div>
 
+      {% if config.REMOTE_DOWNLOAD_ENABLED %}
+      <div class="nova-panel p-5" data-remote-panel
+           data-remote-list-url="{{ url_for('remote.index') }}"
+           data-remote-create-url="{{ url_for('remote.create') }}"
+           data-csrf="{{ csrf_token() }}">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Remote fetch</p>
+            <h3 class="mt-2 text-2xl font-semibold text-white">Add by URL</h3>
+            <p class="mt-2 text-sm text-slate-400">Paste an http(s), ftp, sftp, magnet or .torrent link and NovaDrive downloads it server-side into this folder.</p>
+          </div>
+        </div>
+        <form method="post" action="{{ url_for('remote.create') }}" class="mt-5 space-y-3" data-remote-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="flex flex-col gap-3 sm:flex-row">
+            <input type="text" name="url" required placeholder="https://… · ftp://… · magnet:?xt=…"
+                   class="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:border-fuchsia-400/50 focus:outline-none"
+                   data-remote-url {% if not usage.can_upload %}disabled{% endif %}>
+            <button type="submit" class="nova-button-primary" {% if not usage.can_upload %}disabled{% endif %}>Fetch</button>
+          </div>
+          <div class="flex flex-col gap-3 sm:flex-row">
+            <label class="flex-1">
+              <span class="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-500">Save to</span>
+              <select name="folder_id" class="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white focus:border-fuchsia-400/50 focus:outline-none">
+                {% for folder_option_id, folder_option_name in folder_options %}
+                  <option value="{{ folder_option_id }}" {% if folder_option_id == default_remote_folder_id %}selected{% endif %}>{{ folder_option_name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label class="flex-1">
+              <span class="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-500">…or new folder</span>
+              <input type="text" name="new_folder" placeholder="New folder name (optional)"
+                     class="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:border-fuchsia-400/50 focus:outline-none">
+            </label>
+          </div>
+        </form>
+        <div class="mt-5 space-y-2" data-remote-list>
+          <p class="text-sm text-slate-500" data-remote-empty>No remote downloads yet.</p>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="nova-panel p-5">
         <div class="flex items-center justify-between">
           <div>
@@ -517,4 +559,147 @@
     </div>
   </section>
 </div>
+
+<script>
+(function () {
+  const panel = document.querySelector('[data-remote-panel]');
+  if (!panel) return;
+
+  const listUrl = panel.dataset.remoteListUrl;
+  const createUrl = panel.dataset.remoteCreateUrl;
+  const csrf = panel.dataset.csrf;
+  const listEl = panel.querySelector('[data-remote-list]');
+  const form = panel.querySelector('[data-remote-form]');
+  const urlInput = panel.querySelector('[data-remote-url]');
+
+  function fmtBytes(value) {
+    if (!value && value !== 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = Number(value);
+    let i = 0;
+    while (size >= 1024 && i < units.length - 1) { size /= 1024; i += 1; }
+    return (i === 0 ? size : size.toFixed(1)) + ' ' + units[i];
+  }
+
+  const STATUS_STYLES = {
+    queued: 'text-slate-300',
+    running: 'text-fuchsia-200',
+    completed: 'text-emerald-300',
+    failed: 'text-rose-300',
+    canceled: 'text-amber-200',
+  };
+
+  function row(job) {
+    const wrap = document.createElement('div');
+    wrap.className = 'rounded-2xl border border-white/10 bg-white/5 px-4 py-3';
+
+    const top = document.createElement('div');
+    top.className = 'flex items-center justify-between gap-3';
+
+    const name = document.createElement('span');
+    name.className = 'truncate text-sm text-white';
+    name.textContent = job.filename || job.url;
+    name.title = job.url;
+    top.appendChild(name);
+
+    const status = document.createElement('span');
+    status.className = 'shrink-0 text-xs ' + (STATUS_STYLES[job.status] || 'text-slate-300');
+    status.textContent = job.status;
+    top.appendChild(status);
+    wrap.appendChild(top);
+
+    if (job.is_active) {
+      const shell = document.createElement('div');
+      shell.className = 'mt-2 h-1.5 overflow-hidden rounded-full bg-white/10';
+      const bar = document.createElement('div');
+      bar.className = 'h-1.5 rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500';
+      bar.style.width = (job.percent || 0) + '%';
+      shell.appendChild(bar);
+      wrap.appendChild(shell);
+
+      const meta = document.createElement('div');
+      meta.className = 'mt-2 flex items-center justify-between text-xs text-slate-400';
+      const prog = document.createElement('span');
+      prog.textContent = fmtBytes(job.progress_bytes) + (job.total_bytes ? ' / ' + fmtBytes(job.total_bytes) : '');
+      meta.appendChild(prog);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'text-amber-200 hover:text-amber-100';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => cancelJob(job.id));
+      meta.appendChild(cancelBtn);
+      wrap.appendChild(meta);
+    } else if (job.status === 'completed' && job.file_id) {
+      const link = document.createElement('a');
+      link.className = 'mt-2 inline-block text-xs text-emerald-300 hover:text-emerald-200';
+      link.href = '/files/' + job.file_id;
+      link.textContent = 'Open file · ' + fmtBytes(job.total_bytes);
+      wrap.appendChild(link);
+    } else if (job.error) {
+      const err = document.createElement('p');
+      err.className = 'mt-2 text-xs text-rose-300';
+      err.textContent = job.error;
+      wrap.appendChild(err);
+    }
+    return wrap;
+  }
+
+  function render(downloads) {
+    listEl.textContent = '';
+    if (!downloads.length) {
+      const empty = document.createElement('p');
+      empty.className = 'text-sm text-slate-500';
+      empty.textContent = 'No remote downloads yet.';
+      listEl.appendChild(empty);
+      return;
+    }
+    downloads.forEach((job) => listEl.appendChild(row(job)));
+  }
+
+  let hasActive = false;
+  function poll() {
+    fetch(listUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((data) => {
+        const items = data.downloads || [];
+        hasActive = items.some((job) => job.is_active);
+        render(items);
+      })
+      .catch(() => {});
+  }
+
+  function cancelJob(id) {
+    fetch(listUrl + '/' + id + '/cancel', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrf },
+    }).then(poll).catch(() => {});
+  }
+
+  if (form) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const body = new FormData(form);
+      fetch(createUrl, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrf },
+        body,
+      })
+        .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+          if (ok && data.success) {
+            if (urlInput) urlInput.value = '';
+            poll();
+          } else {
+            alert((data && data.error) || 'Could not queue that download.');
+          }
+        })
+        .catch(() => alert('Could not queue that download.'));
+    });
+  }
+
+  poll();
+  setInterval(() => { if (!document.hidden) poll(); }, 3000);
+})();
+</script>
 {% endblock %}

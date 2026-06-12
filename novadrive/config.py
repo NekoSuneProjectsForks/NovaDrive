@@ -284,3 +284,42 @@ class Config:
     SHARE_TOKEN_BYTES = _as_int(os.getenv("SHARE_TOKEN_BYTES"), 24)
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
+    # Master switch for in-process background threads (download workers +
+    # one-time S3 consolidation). Disable for one-off CLI invocations.
+    BACKGROUND_WORKERS_ENABLED = _as_bool(os.getenv("BACKGROUND_WORKERS_ENABLED"), True)
+
+    # One-time background pass on startup that merges any legacy multi-chunk
+    # objects stored on a whole-file backend (S3) back into single objects.
+    STORAGE_CONSOLIDATE_ON_STARTUP = _as_bool(
+        os.getenv("STORAGE_CONSOLIDATE_ON_STARTUP"),
+        True,
+    )
+
+    # Remote download ("Add by URL"): fetch files server-side into the drive.
+    REMOTE_DOWNLOAD_ENABLED = _as_bool(os.getenv("REMOTE_DOWNLOAD_ENABLED"), True)
+    # Per-process worker threads draining the queued-download queue.
+    REMOTE_DOWNLOAD_WORKERS = max(1, _as_int(os.getenv("REMOTE_DOWNLOAD_WORKERS"), 2))
+    # Connect/read timeouts (seconds) for the remote source.
+    REMOTE_DOWNLOAD_CONNECT_TIMEOUT_SECONDS = _as_int(
+        os.getenv("REMOTE_DOWNLOAD_CONNECT_TIMEOUT_SECONDS"),
+        15,
+    )
+    REMOTE_DOWNLOAD_READ_TIMEOUT_SECONDS = _as_int(
+        os.getenv("REMOTE_DOWNLOAD_READ_TIMEOUT_SECONDS"),
+        120,
+    )
+    # Allow pulling from private/loopback/link-local addresses. Off by default
+    # to block SSRF (e.g. cloud metadata endpoints, internal services).
+    REMOTE_DOWNLOAD_ALLOW_PRIVATE_HOSTS = _as_bool(
+        os.getenv("REMOTE_DOWNLOAD_ALLOW_PRIVATE_HOSTS"),
+        False,
+    )
+    # Default torrent/magnet permission for NON-admin users whose per-account
+    # flag is unset. Admins always have access; an admin can override this per
+    # user from the profile page. Torrents connect to arbitrary peers, so the
+    # SSRF host check does not apply to a magnet swarm.
+    REMOTE_DOWNLOAD_ALLOW_TORRENTS = _as_bool(
+        os.getenv("REMOTE_DOWNLOAD_ALLOW_TORRENTS"),
+        True,
+    )
+

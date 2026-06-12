@@ -53,6 +53,10 @@ class User(UserMixin, TimestampMixin, db.Model):
     api_key_hash = db.Column(db.String(64), nullable=True, index=True)
     api_key_last4 = db.Column(db.String(4), nullable=True)
     api_key_created_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Per-user permission to start torrent/magnet remote downloads. NULL means
+    # "inherit the REMOTE_DOWNLOAD_ALLOW_TORRENTS instance default". Admins are
+    # always allowed regardless of this value.
+    can_download_torrents = db.Column(db.Boolean, nullable=True)
 
     folders = db.relationship("Folder", back_populates="owner", lazy="select")
     files = db.relationship("File", back_populates="owner", lazy="select")
@@ -358,4 +362,44 @@ class ObsOverlaySettings(TimestampMixin, db.Model):
 
     user = db.relationship("User", back_populates="obs_overlay_settings")
     folder = db.relationship("Folder")
+
+
+class RemoteDownload(TimestampMixin, db.Model):
+    """A server-side "fetch by URL" job that ingests a remote file."""
+
+    STATUS_QUEUED = "queued"
+    STATUS_RUNNING = "running"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+    STATUS_CANCELED = "canceled"
+    ACTIVE_STATUSES = (STATUS_QUEUED, STATUS_RUNNING)
+
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    folder_id = db.Column(db.Integer, db.ForeignKey("folder.id"), nullable=False, index=True)
+    shared_drive_id = db.Column(db.Integer, db.ForeignKey("shared_drive.id"), nullable=True, index=True)
+    source_url = db.Column(db.Text, nullable=False)
+    source_type = db.Column(db.String(16), nullable=False, default="http")
+    filename = db.Column(db.String(255), nullable=True)
+    status = db.Column(db.String(16), nullable=False, default=STATUS_QUEUED, index=True)
+    progress_bytes = db.Column(db.BigInteger, nullable=False, default=0)
+    total_bytes = db.Column(db.BigInteger, nullable=True)
+    error = db.Column(db.Text, nullable=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("file.id"), nullable=True, index=True)
+    started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    finished_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    owner = db.relationship("User")
+    folder = db.relationship("Folder")
+    file = db.relationship("File")
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in self.ACTIVE_STATUSES
+
+    @property
+    def percent(self) -> int:
+        if not self.total_bytes or self.total_bytes <= 0:
+            return 0
+        return min(100, int((self.progress_bytes / self.total_bytes) * 100))
 

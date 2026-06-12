@@ -592,6 +592,7 @@ class AuthService:
         email_verified: bool | None = None,
         storage_quota_bytes: int | None = None,
         must_change_password: bool | None = None,
+        can_download_torrents: bool | None = None,
         actor_id: int | None = None,
     ) -> User:
         updates: dict[str, object] = {}
@@ -646,6 +647,12 @@ class AuthService:
             if user.must_change_password != required:
                 user.must_change_password = required
                 updates["must_change_password"] = required
+
+        if can_download_torrents is not None:
+            allowed = bool(can_download_torrents)
+            if bool(user.can_download_torrents) != allowed:
+                user.can_download_torrents = allowed
+                updates["can_download_torrents"] = allowed
 
         if email_verified is not None:
             if email_verified and not user.is_email_verified:
@@ -710,6 +717,25 @@ class AuthService:
     @staticmethod
     def count_admins() -> int:
         return User.query.filter_by(role="admin").count()
+
+    @staticmethod
+    def user_can_download_torrents(user: User, config=None) -> bool:
+        """Whether ``user`` may start torrent/magnet remote downloads.
+
+        Admins always may. For everyone else the per-user flag wins; when it is
+        unset (NULL) the ``REMOTE_DOWNLOAD_ALLOW_TORRENTS`` instance default
+        applies.
+        """
+        if user.is_admin:
+            return True
+        if user.can_download_torrents is not None:
+            return bool(user.can_download_torrents)
+        resolved_config = config
+        if resolved_config is None and has_app_context():
+            resolved_config = current_app.config
+        if resolved_config is None:
+            return True
+        return bool(resolved_config.get("REMOTE_DOWNLOAD_ALLOW_TORRENTS", True))
 
     @staticmethod
     def default_storage_quota_bytes(role: str, config=None) -> int:

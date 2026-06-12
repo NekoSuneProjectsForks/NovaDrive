@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class DiscordStorageBackend:
+    # Discord caps attachment size, so files are split into chunks per message.
+    whole_file = False
+
     def __init__(self, config: Mapping[str, Any]):
         self.base_url = config["DISCORD_BOT_BRIDGE_URL"]
         self.shared_secret = config["DISCORD_BOT_BRIDGE_SHARED_SECRET"]

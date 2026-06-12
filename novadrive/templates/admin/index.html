@@ -156,11 +156,29 @@
           <p class="text-xs uppercase tracking-[0.28em] text-slate-500">Users</p>
           <h2 class="mt-2 text-2xl font-semibold text-white">Workspace members</h2>
           <p class="mt-2 text-sm text-slate-400">Quick role and quota controls stay here. Use `Open Workspace` for full user administration, profile edits, and file control.</p>
+          <form id="admin-bulk-form" action="{{ url_for('admin.bulk_users') }}" method="post" class="mt-4 flex flex-wrap items-center gap-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" data-bulk-action-field>
+            <span class="text-xs text-slate-400" data-bulk-count>0 selected</span>
+            <button type="submit" data-bulk-action="purge"
+                    class="rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-100 transition hover:bg-amber-500/20"
+                    data-confirm-submit data-confirm-title="Purge selected users' data?"
+                    data-confirm-body="This permanently deletes all personal files and folders (and the stored objects) for every selected user. Accounts are kept.">
+              Purge data
+            </button>
+            <button type="submit" data-bulk-action="delete"
+                    class="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20"
+                    data-confirm-submit data-confirm-title="Delete selected accounts?"
+                    data-confirm-body="This permanently deletes every selected account and all of their personal data. Shared drives they own are reassigned to you. This cannot be undone.">
+              Delete accounts
+            </button>
+          </form>
         </div>
         <div class="overflow-x-auto">
           <table class="min-w-full divide-y divide-white/10 text-sm">
             <thead class="bg-white/5 text-left text-xs uppercase tracking-[0.24em] text-slate-500">
               <tr>
+                <th class="px-6 py-4"><input type="checkbox" data-bulk-all aria-label="Select all users"></th>
                 <th class="px-6 py-4">User</th>
                 <th class="px-6 py-4">Role</th>
                 <th class="px-6 py-4">Email</th>
@@ -173,6 +191,11 @@
             <tbody class="divide-y divide-white/5">
               {% for user in users %}
                 <tr>
+                  <td class="px-6 py-4 align-top">
+                    {% if user.id != current_user.id %}
+                      <input type="checkbox" form="admin-bulk-form" name="user_ids" value="{{ user.id }}" data-bulk-item aria-label="Select {{ user.username }}">
+                    {% endif %}
+                  </td>
                   <td class="px-6 py-4">
                     <p class="font-medium text-white">{{ user.username }}</p>
                     <p class="mt-1 text-xs text-slate-500">ID {{ user.id }}</p>
@@ -210,6 +233,16 @@
                         <input type="number" name="storage_quota_gb" min="0" step="0.1" value="{{ '0' if user.storage_quota_bytes <= 0 else '%.2f'|format(user.storage_quota_bytes / 1073741824) }}" class="w-28 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white">
                         <button type="submit" class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 transition hover:border-fuchsia-400/40 hover:bg-white/10">Save Quota</button>
                       </form>
+                      {% if user.id != current_user.id %}
+                      <form action="{{ url_for('admin.delete_user', user_id=user.id) }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="rounded-xl border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-100 transition hover:bg-rose-500/20"
+                                data-confirm-submit data-confirm-title="Delete {{ user.username }}?"
+                                data-confirm-body="This permanently deletes the account and all of {{ user.username }}'s personal data. Shared drives they own are reassigned to you.">
+                          Delete account
+                        </button>
+                      </form>
+                      {% endif %}
                     </div>
                   </td>
                 </tr>
@@ -269,4 +302,51 @@
     </div>
   </section>
 </div>
+
+<script>
+(function () {
+  const form = document.getElementById('admin-bulk-form');
+  if (!form) return;
+  const actionField = form.querySelector('[data-bulk-action-field]');
+  const countEl = form.querySelector('[data-bulk-count]');
+  const selectAll = document.querySelector('[data-bulk-all]');
+  const items = Array.from(document.querySelectorAll('[data-bulk-item]'));
+
+  function selected() {
+    return items.filter((cb) => cb.checked);
+  }
+  function refresh() {
+    const n = selected().length;
+    if (countEl) countEl.textContent = n + ' selected';
+    if (selectAll) {
+      selectAll.checked = n > 0 && n === items.length;
+      selectAll.indeterminate = n > 0 && n < items.length;
+    }
+  }
+
+  items.forEach((cb) => cb.addEventListener('change', refresh));
+  if (selectAll) {
+    selectAll.addEventListener('change', () => {
+      items.forEach((cb) => { cb.checked = selectAll.checked; });
+      refresh();
+    });
+  }
+
+  // Runs before app.js's confirm handler (inline parses first), so we can set
+  // the action and block empty submissions before the modal opens.
+  form.querySelectorAll('[data-bulk-action]').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      if (!selected().length) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        alert('Select at least one user first.');
+        return;
+      }
+      if (actionField) actionField.value = btn.dataset.bulkAction;
+    });
+  });
+
+  refresh();
+})();
+</script>
 {% endblock %}

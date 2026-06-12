@@ -74,6 +74,15 @@
             <input type="checkbox" name="must_change_password" class="h-4 w-4 rounded border-white/20 bg-transparent text-fuchsia-500" {% if target_user.must_change_password %}checked{% endif %}>
             Force password change on next login
           </label>
+          {% if target_user.is_admin %}
+            <p class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-400">Admins always have full remote-download access, including torrents and magnets.</p>
+          {% else %}
+            <label class="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-300">
+              <input type="checkbox" name="can_download_torrents" class="h-4 w-4 rounded border-white/20 bg-transparent text-fuchsia-500"
+                     {% if torrents_allowed %}checked{% endif %}>
+              Allow torrent &amp; magnet remote downloads
+            </label>
+          {% endif %}
           <button type="submit" class="nova-button-primary w-full">Save Profile</button>
         </form>
         {% if config.SMTP_HOST and config.SMTP_FROM_EMAIL %}

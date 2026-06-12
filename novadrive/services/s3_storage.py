@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 class S3StorageBackend:
+    # S3 has no per-object size limit comparable to Discord's attachment cap, so
+    # files are stored as a single object instead of being split into chunks.
+    whole_file = True
+
     def __init__(self, config: Mapping[str, Any]):
         self.endpoint_url = (config.get("S3_ENDPOINT_URL") or "").strip() or None
         self.region = (config.get("S3_REGION") or "").strip() or None
@@ -176,6 +180,103 @@ class S3StorageBackend:
                 error=str(exc),
             )
             raise StorageBackendError("Chunk deletion from S3 failed.") from exc
+
+    def upload_whole(
+        self,
+        stream: Any,
+        filename: str,
+        sha256: str,
+        channel_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Store the entire file as one S3 object, streamed from ``stream``.
+
+        Unlike :meth:`upload_chunk`, the body is never fully materialised in
+        memory: ``upload_fileobj`` streams it and transparently switches to a
+        multipart upload for large files.
+        """
+        object_key = self._build_object_key(filename, sha256, metadata or {})
+        safe_metadata = self._sanitize_metadata(metadata or {})
+        safe_metadata["sha256"] = sha256
+
+        try:
+            self.client.upload_fileobj(
+                Fileobj=stream,
+                Bucket=self.bucket_name,
+                Key=object_key,
+                ExtraArgs={
+                    "ContentType": "application/octet-stream",
+                    "Metadata": safe_metadata,
+                },
+            )
+            payload = {
+                "channel_id": self.bucket_name,
+                "message_id": object_key,
+                "attachment_url": f"s3://{self.bucket_name}/{object_key}",
+                "attachment_filename": filename,
+            }
+            structured_log(
+                logger,
+                "storage.object_uploaded",
+                backend="s3",
+                bucket_name=self.bucket_name,
+                object_key=object_key,
+                filename=filename,
+            )
+            return payload
+        except (BotoCoreError, ClientError) as exc:
+            structured_log(
+                logger,
+                "storage.object_upload_failed",
+                backend="s3",
+                bucket_name=self.bucket_name,
+                filename=filename,
+                error=str(exc),
+            )
+            raise StorageBackendError("Object upload to S3 failed.") from exc
+
+    def fetch_whole(
+        self,
+        channel_id: str | int,
+        message_id: str | int,
+        dest_stream: Any,
+        hasher: Any | None = None,
+    ) -> int:
+        """Stream an S3 object into ``dest_stream`` without buffering it whole.
+
+        Returns the number of bytes written. When ``hasher`` is provided it is
+        updated incrementally so the caller can verify the digest.
+        """
+        bucket_name = str(channel_id or self.bucket_name)
+        object_key = str(message_id)
+        try:
+            response = self.client.get_object(Bucket=bucket_name, Key=object_key)
+            body = response["Body"]
+            total = 0
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                dest_stream.write(chunk)
+                if hasher is not None:
+                    hasher.update(chunk)
+                total += len(chunk)
+            structured_log(
+                logger,
+                "storage.object_fetched",
+                backend="s3",
+                bucket_name=bucket_name,
+                object_key=object_key,
+                object_size=total,
+            )
+            return total
+        except (BotoCoreError, ClientError) as exc:
+            structured_log(
+                logger,
+                "storage.object_fetch_failed",
+                backend="s3",
+                bucket_name=bucket_name,
+                object_key=object_key,
+                error=str(exc),
+            )
+            raise StorageBackendError("Object download from S3 failed.") from exc
 
     def _build_object_key(self, filename: str, sha256: str, metadata: dict[str, Any]) -> str:
         file_id = metadata.get("file_id", "file")

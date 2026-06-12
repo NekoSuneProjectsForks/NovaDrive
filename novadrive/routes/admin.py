@@ -8,6 +8,7 @@ from sqlalchemy import func
 
 from novadrive.extensions import db
 from novadrive.models import ActivityLog, File, Folder, SharedDrive, User, UserSession
+from novadrive.services.admin_service import AdminActionError, AdminService
 from novadrive.services.auth_service import AuthService
 from novadrive.services.email_service import EmailDeliveryError, EmailService
 from novadrive.services.file_service import AccessError, FileService
@@ -213,6 +214,7 @@ def user_details(user_id: int):
         folder_options=FileService.folder_options(current_user, owner=target_user),
         query=query,
         type_filter=type_filter,
+        torrents_allowed=AuthService.user_can_download_torrents(target_user, current_app.config),
     )
 
 
@@ -237,6 +239,7 @@ def update_user_profile(user_id: int):
             email_verified=request.form.get("email_verified") == "on",
             storage_quota_bytes=quota_bytes,
             must_change_password=request.form.get("must_change_password") == "on",
+            can_download_torrents=request.form.get("can_download_torrents") == "on",
             actor_id=current_user.id,
         )
         flash("User profile updated.", "success")
@@ -367,6 +370,77 @@ def update_user_role(user_id: int):
         flash("User role updated.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
+    return redirect(url_for("admin.index"))
+
+
+@admin_bp.route("/users/<int:user_id>/purge", methods=["POST"])
+@login_required
+@admin_required
+def purge_user(user_id: int):
+    target_user = db.session.get(User, user_id)
+    if not target_user:
+        flash("User not found.", "error")
+        return redirect(url_for("admin.index"))
+
+    try:
+        counts = AdminService.purge_user_data(target_user, current_user)
+        flash(
+            f"Purged {counts['files']} file(s) and {counts['folders']} folder(s) "
+            f"for {target_user.username}.",
+            "success",
+        )
+    except AdminActionError as exc:
+        flash(str(exc), "error")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Failed to purge data for user %s", user_id)
+        flash("Could not purge that user's data.", "error")
+    return redirect(url_for("admin.user_details", user_id=user_id))
+
+
+@admin_bp.route("/users/<int:user_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def delete_user(user_id: int):
+    target_user = db.session.get(User, user_id)
+    if not target_user:
+        flash("User not found.", "error")
+        return redirect(url_for("admin.index"))
+
+    username = target_user.username
+    try:
+        AdminService.delete_account(target_user, current_user)
+        flash(f"Deleted the account for {username}.", "success")
+        return redirect(url_for("admin.index"))
+    except AdminActionError as exc:
+        flash(str(exc), "error")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Failed to delete user %s", user_id)
+        flash("Could not delete that account.", "error")
+    return redirect(url_for("admin.user_details", user_id=user_id))
+
+
+@admin_bp.route("/users/bulk", methods=["POST"])
+@login_required
+@admin_required
+def bulk_users():
+    action = request.form.get("action", "")
+    user_ids = request.form.getlist("user_ids", type=int)
+    if not user_ids:
+        flash("Select at least one user.", "error")
+        return redirect(url_for("admin.index"))
+
+    try:
+        result = AdminService.bulk(action, user_ids, current_user)
+    except AdminActionError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin.index"))
+
+    verb = "Deleted" if action == "delete" else "Purged data for"
+    flash(f"{verb} {result['processed']} user(s).", "success")
+    for note in result["skipped"]:
+        flash(f"Skipped — {note}", "error")
     return redirect(url_for("admin.index"))
 
 

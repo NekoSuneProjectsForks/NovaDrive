@@ -76,7 +76,38 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     _register_template_helpers(app)
     _register_error_handlers(app)
     _register_cli(app)
+    _start_background_jobs(app)
     return app
+
+
+def _start_background_jobs(app: Flask) -> None:
+    """Launch in-process worker threads and the one-time S3 consolidation pass."""
+    if not app.config.get("BACKGROUND_WORKERS_ENABLED", True):
+        return
+
+    import threading
+
+    from novadrive.services import remote_download
+
+    remote_download.start_workers(app)
+
+    if (
+        app.config.get("STORAGE_CONSOLIDATE_ON_STARTUP", True)
+        and configured_storage_backend_name(app.config) == "s3"
+    ):
+        from novadrive.services.storage_maintenance import consolidate_chunked_objects
+
+        def _run_consolidation() -> None:
+            try:
+                consolidate_chunked_objects(app, backend_name="s3")
+            except Exception:  # noqa: BLE001 - background best-effort
+                app.logger.exception("S3 consolidation pass failed to start.")
+
+        threading.Thread(
+            target=_run_consolidation,
+            name="s3-consolidate",
+            daemon=True,
+        ).start()
 
 
 def _init_extensions(app: Flask) -> None:
@@ -102,6 +133,7 @@ def _register_blueprints(app: Flask) -> None:
     from novadrive.routes.files import files_bp
     from novadrive.routes.folders import folders_bp
     from novadrive.routes.overlay import overlay_bp
+    from novadrive.routes.remote import remote_bp
     from novadrive.routes.share import share_bp
     from novadrive.routes.shared_drives import shared_drives_bp
     from novadrive.routes.webdav import webdav_bp
@@ -112,6 +144,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(files_bp)
     app.register_blueprint(folders_bp)
     app.register_blueprint(overlay_bp)
+    app.register_blueprint(remote_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(share_bp)
     app.register_blueprint(shared_drives_bp)
@@ -186,6 +219,8 @@ def _ensure_runtime_schema(app: Flask) -> None:
             statements.append('ALTER TABLE "user" ADD COLUMN webdav_password_created_at TIMESTAMP')
         if "storage_quota_bytes" not in user_columns:
             statements.append('ALTER TABLE "user" ADD COLUMN storage_quota_bytes BIGINT')
+        if "can_download_torrents" not in user_columns:
+            statements.append('ALTER TABLE "user" ADD COLUMN can_download_torrents BOOLEAN')
         statements.append('CREATE INDEX IF NOT EXISTS ix_user_api_key_hash ON "user" (api_key_hash)')
 
         folder_columns = {column["name"] for column in inspector.get_columns("folder")}
