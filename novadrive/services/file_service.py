@@ -8,7 +8,7 @@ import secrets
 import tempfile
 from typing import BinaryIO
 
-from flask import current_app
+from flask import current_app, has_request_context, request
 from sqlalchemy import func
 
 from novadrive.extensions import db
@@ -350,6 +350,23 @@ class FileService:
         return uploaded_records
 
     @staticmethod
+    def effective_max_upload_size(config) -> int:
+        """Per-request upload ceiling.
+
+        Direct requests (e.g. LAN hosts listed in APP_EXTERNAL_URLS) get the
+        full MAX_UPLOAD_SIZE_BYTES. The lower Cloudflare cap only applies to
+        requests that actually reach NovaDrive through Cloudflare.
+        """
+        full_limit = config["MAX_UPLOAD_SIZE_BYTES"]
+        if not config.get("CLOUDFLARE_TUNNEL_COMPAT"):
+            return full_limit
+
+        direct_hosts = config.get("APP_DIRECT_UPLOAD_HOSTS") or frozenset()
+        if direct_hosts and has_request_context() and request.host.lower() in direct_hosts:
+            return full_limit
+        return config.get("CLOUDFLARE_PROXIED_MAX_UPLOAD_SIZE_BYTES", full_limit)
+
+    @staticmethod
     def upload_single_file(user: User, folder: Folder, upload, config, existing_file: File | None = None) -> File:
         FileService._ensure_can_write_folder(user, folder)
         safe_original_filename = normalize_filename(upload.filename)
@@ -360,24 +377,25 @@ class FileService:
         spool = tempfile.SpooledTemporaryFile(max_size=max_memory, mode="w+b")
         digest = hashlib.sha256()
         total_size = 0
+        max_upload_size = FileService.effective_max_upload_size(config)
 
         while True:
             buffer = upload.stream.read(1024 * 1024)
             if not buffer:
                 break
             total_size += len(buffer)
-            if total_size > config["MAX_UPLOAD_SIZE_BYTES"]:
+            if total_size > max_upload_size:
                 spool.close()
-                if config.get("CLOUDFLARE_TUNNEL_COMPAT"):
+                if max_upload_size < config["MAX_UPLOAD_SIZE_BYTES"] and config.get("CLOUDFLARE_TUNNEL_COMPAT"):
                     plan = str(config.get("CLOUDFLARE_TUNNEL_PLAN", "free")).capitalize()
                     raise ValidationError(
                         f"This file cannot be uploaded because this NovaDrive instance is running through "
                         f"Cloudflare {plan} tier compatibility mode. Maximum upload size: "
-                        f"{FileService._format_bytes(config['MAX_UPLOAD_SIZE_BYTES'])}."
+                        f"{FileService._format_bytes(max_upload_size)}."
                     )
                 raise ValidationError(
                     f"This file cannot be uploaded because it exceeds the maximum upload size of "
-                    f"{FileService._format_bytes(config['MAX_UPLOAD_SIZE_BYTES'])}."
+                    f"{FileService._format_bytes(max_upload_size)}."
                 )
             digest.update(buffer)
             spool.write(buffer)

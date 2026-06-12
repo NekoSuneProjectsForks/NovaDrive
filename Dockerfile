@@ -26,4 +26,6 @@ COPY --from=assets /app/novadrive/static/dist/output.css /app/novadrive/static/d
 
 EXPOSE 5000 5051
 
-CMD ["waitress-serve", "--host=0.0.0.0", "--port=5000", "--call", "novadrive.app:create_app"]
+# --max-request-body-size (6 GiB) must exceed MAX_UPLOAD_SIZE_BYTES plus
+# multipart overhead, or waitress drops large uploads before Flask sees them.
+CMD ["waitress-serve", "--host=0.0.0.0", "--port=5000", "--max-request-body-size=6442450944", "--call", "novadrive.app:create_app"]

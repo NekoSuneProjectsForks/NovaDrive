@@ -157,12 +157,23 @@ class Config:
         os.getenv("MAX_UPLOAD_SIZE_BYTES"),
         536_870_912,
     )
-    MAX_UPLOAD_SIZE_BYTES = _resolve_max_upload_size(
+    # Absolute ceiling. Enforced for direct requests (e.g. LAN access that does
+    # not pass through Cloudflare).
+    MAX_UPLOAD_SIZE_BYTES = max(CONFIGURED_MAX_UPLOAD_SIZE_BYTES, 1)
+    # Lower ceiling applied only to Cloudflare-proxied requests when compat mode
+    # is on, so Cloudflare does not reject the request body first.
+    CLOUDFLARE_PROXIED_MAX_UPLOAD_SIZE_BYTES = _resolve_max_upload_size(
         CONFIGURED_MAX_UPLOAD_SIZE_BYTES,
         cloudflare_tunnel_compat=CLOUDFLARE_TUNNEL_COMPAT,
         cloudflare_safe_limit=CLOUDFLARE_TUNNEL_PLAN_SAFE_LIMIT_BYTES,
     )
+    # Flask's hard transport limit is the absolute ceiling so direct/LAN uploads
+    # are never connection-reset before the view runs. The Cloudflare cap is
+    # enforced per request in FileService.effective_max_upload_size() instead.
     MAX_CONTENT_LENGTH = MAX_UPLOAD_SIZE_BYTES
+    # Hosts (from APP_EXTERNAL_URLS) that bypass Cloudflare and therefore use the
+    # full MAX_UPLOAD_SIZE_BYTES even when Cloudflare compat mode is enabled.
+    APP_DIRECT_UPLOAD_HOSTS = frozenset(_external_url_map("", APP_EXTERNAL_URLS).keys())
     SPOOL_MAX_MEMORY_BYTES = _as_int(os.getenv("SPOOL_MAX_MEMORY_BYTES"), 8_388_608)
     TEXT_PREVIEW_MAX_BYTES = _as_int(os.getenv("TEXT_PREVIEW_MAX_BYTES"), 1_048_576)
     DEFAULT_USER_STORAGE_QUOTA_BYTES = _as_int(

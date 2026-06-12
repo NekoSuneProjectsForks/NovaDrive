@@ -366,9 +366,12 @@ def _register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(413)
     def request_too_large(error):
-        limit_label = format_bytes(app.config["MAX_UPLOAD_SIZE_BYTES"])
+        from novadrive.services.file_service import FileService
+
+        effective_limit = FileService.effective_max_upload_size(app.config)
+        limit_label = format_bytes(effective_limit)
         message = f"This file cannot be uploaded because it exceeds the maximum upload size of {limit_label}."
-        if app.config.get("CLOUDFLARE_TUNNEL_COMPAT"):
+        if effective_limit < app.config["MAX_UPLOAD_SIZE_BYTES"] and app.config.get("CLOUDFLARE_TUNNEL_COMPAT"):
             plan = str(app.config["CLOUDFLARE_TUNNEL_PLAN"]).capitalize()
             message = (
                 f"This file cannot be uploaded because this NovaDrive instance is running through "

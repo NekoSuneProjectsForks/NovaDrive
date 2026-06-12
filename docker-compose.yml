@@ -2,7 +2,7 @@ services:
   web:
     build: .
     image: ghcr.io/cachenetworks/novadrive:main
-    command: ["waitress-serve", "--host=0.0.0.0", "--port=5000", "--call", "novadrive.app:create_app"]
+    command: ["waitress-serve", "--host=0.0.0.0", "--port=5000", "--max-request-body-size=6442450944", "--call", "novadrive.app:create_app"]
     env_file:
       - .env
     environment:

@@ -401,7 +401,7 @@ Recommended bot permissions:
 | `APP_EXTERNAL_URLS` | Extra hosts (comma/space separated) that may also serve NovaDrive. Requests arriving on a listed host get ShareX/share/WebDAV links built from that host, so a public domain and a LAN address both work. Same scheme inference as `APP_EXTERNAL_URL`. | `192.168.1.107:5666, novadrive.local:5666` |
 | `CLOUDFLARE_TUNNEL_COMPAT` | Clamp uploads to a Cloudflare-compatible request size before Cloudflare returns `413 Payload Too Large` | `true` |
 | `CLOUDFLARE_TUNNEL_PLAN` | Cloudflare upload plan preset: `free`, `pro`, `business`, or `enterprise`. NovaDrive applies a built-in safe request cap for the selected plan. | `free` |
-| `MAX_UPLOAD_SIZE_BYTES` | Max allowed upload request size through Flask before any optional Cloudflare compatibility clamp is applied | `536870912` |
+| `MAX_UPLOAD_SIZE_BYTES` | Absolute upload ceiling. Enforced for direct requests (e.g. LAN access). `5368709120` = 5 GiB, `1073741824` = 1 GiB, `536870912` = 512 MiB. Above 1 GiB you must also raise waitress's `--max-request-body-size`. | `536870912` |
 | `SPOOL_MAX_MEMORY_BYTES` | Max in-memory temp spool before disk spill | `8388608` |
 | `TEXT_PREVIEW_MAX_BYTES` | Max text bytes rendered inline on preview pages | `1048576` |
 | `DEFAULT_USER_STORAGE_QUOTA_BYTES` | Default storage cap applied to new non-admin users | `10737418240` |
@@ -828,7 +828,7 @@ NovaDrive uses built-in safe caps for each plan so you do not need a separate ma
 - `business`: `199,000,000` bytes
 - `enterprise`: `499,000,000` bytes
 
-Then restart NovaDrive. The app will clamp `MAX_UPLOAD_SIZE_BYTES` to the safe cap for that plan and the dashboard will show the effective upload limit before users submit files.
+Then restart NovaDrive. The Cloudflare cap is applied **only to Cloudflare-proxied requests**. Requests arriving on a host listed in `APP_EXTERNAL_URLS` (e.g. a direct LAN address) keep the full `MAX_UPLOAD_SIZE_BYTES`, so you can upload large files over the LAN while the public domain stays within Cloudflare's body limit.
 
 ### Downloads fail or rebuilt hashes do not match
 
