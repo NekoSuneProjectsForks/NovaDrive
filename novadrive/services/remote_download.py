@@ -16,9 +16,12 @@ that converge on the same ``store_stream`` ingest. See
 
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import logging
 import os
+import re
 import shutil
 import socket
 import tempfile
@@ -289,8 +292,9 @@ def _run_http(config, job: RemoteDownload, user: User, folder: Folder) -> None:
     )
     response = None
     try:
-        response = _open_source(job.source_url, allow_private, timeout)
-        filename = _resolve_filename(job.source_url, response)
+        source_url = _resolve_landing_page(job.source_url, allow_private, timeout)
+        response = _open_source(source_url, allow_private, timeout)
+        filename = _resolve_filename(source_url, response)
         content_length = response.headers.get("Content-Length")
         job.filename = filename[:255]
         job.total_bytes = int(content_length) if content_length and content_length.isdigit() else None
@@ -378,6 +382,59 @@ def _run_aria2(config, job: RemoteDownload, user: User, folder: Folder) -> None:
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
+def _is_mediafire(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return host == "mediafire.com" or host.endswith(".mediafire.com")
+
+
+def _resolve_landing_page(url: str, allow_private: bool, timeout: tuple[int, int]) -> str:
+    """Resolve a known landing-page host to its direct download URL.
+
+    Plain HTTP downloads of e.g. a MediaFire page would just grab the HTML, so
+    sites that gate the file behind a page are scraped for the real link here.
+    Unknown hosts are returned unchanged.
+    """
+    if _is_mediafire(url):
+        return _resolve_mediafire(url, allow_private, timeout)
+    return url
+
+
+def _resolve_mediafire(page_url: str, allow_private: bool, timeout: tuple[int, int]) -> str:
+    _validate_public_url(page_url, allow_private)
+    try:
+        response = requests.get(
+            page_url, timeout=timeout, headers={"User-Agent": _BROWSER_UA}
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RemoteDownloadError(f"Could not open the MediaFire page: {exc}") from exc
+
+    html = response.text or ""
+    # Newer pages expose the link directly on the download button.
+    match = re.search(r'href="(https://download[^"]+?\.mediafire\.com/[^"]+)"', html)
+    if match:
+        return match.group(1).replace("&amp;", "&")
+    # Older/obfuscated pages base64-encode it in data-scrambled-url.
+    match = re.search(r'data-scrambled-url="([^"]+)"', html)
+    if match:
+        try:
+            decoded = base64.b64decode(match.group(1)).decode("utf-8", "ignore")
+        except (ValueError, binascii.Error):
+            decoded = ""
+        if decoded.startswith("http"):
+            return decoded.replace("&amp;", "&")
+    raise RemoteDownloadError(
+        "Could not find a download link on that MediaFire page "
+        "(it may require a captcha, be a folder, or have been removed)."
+    )
+
+
 def _open_source(url: str, allow_private: bool, timeout: tuple[int, int]) -> requests.Response:
     """GET ``url`` following redirects, validating every hop against SSRF rules."""
     session = requests.Session()
@@ -389,7 +446,7 @@ def _open_source(url: str, allow_private: bool, timeout: tuple[int, int]) -> req
             stream=True,
             allow_redirects=False,
             timeout=timeout,
-            headers={"User-Agent": "NovaDrive/remote-download"},
+            headers={"User-Agent": _BROWSER_UA},
         )
         if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get("Location")
