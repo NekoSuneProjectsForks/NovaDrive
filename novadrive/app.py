@@ -112,9 +112,45 @@ def _start_background_jobs(app: Flask) -> None:
 
 def _init_extensions(app: Flask) -> None:
     db.init_app(app)
+    _configure_sqlite_concurrency()
     migrate.init_app(app, db)
     login_manager.init_app(app)
     csrf.init_app(app)
+
+
+_sqlite_pragmas_registered = False
+
+
+def _configure_sqlite_concurrency() -> None:
+    """Put SQLite in WAL mode with a busy timeout.
+
+    NovaDrive runs background worker threads (remote downloads, storage
+    consolidation) alongside the web server. On the default SQLite journal mode
+    those concurrent writers collide with web requests and raise
+    "database is locked", which surfaces as a rolled-back 500. WAL plus a busy
+    timeout lets readers and a writer coexist. No-op for non-SQLite engines.
+    """
+    global _sqlite_pragmas_registered
+    if _sqlite_pragmas_registered:
+        return
+    _sqlite_pragmas_registered = True
+
+    import sqlite3
+
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    @event.listens_for(Engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):  # noqa: ANN001
+        if not isinstance(dbapi_connection, sqlite3.Connection):
+            return
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=15000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
 
     login_manager.login_view = "auth.login"
     login_manager.login_message_category = "info"
