@@ -406,7 +406,7 @@ Recommended bot permissions:
 | `TEXT_PREVIEW_MAX_BYTES` | Max text bytes rendered inline on preview pages | `1048576` |
 | `DEFAULT_USER_STORAGE_QUOTA_BYTES` | Default storage cap applied to new non-admin users | `10737418240` |
 | `DEFAULT_ADMIN_STORAGE_QUOTA_BYTES` | Default storage cap applied to new admin users, `0` for unlimited | `0` |
-| `SESSION_COOKIE_SECURE` | Marks login cookies as HTTPS-only in production | `true` |
+| `SESSION_COOKIE_SECURE` | Marks login cookies as HTTPS-only. Safe to keep `true` even when also serving plain HTTP on the LAN: NovaDrive applies the `Secure` flag per request scheme, so HTTPS stays protected while HTTP LAN logins still work. | `true` |
 | `PERMANENT_SESSION_LIFETIME_HOURS` | Persistent login lifetime | `24` |
 | `ALLOW_PUBLIC_REGISTRATION` | Enables or disables the public `/auth/register` page. When `false`, only existing accounts can sign in and admins/CLI must create users. | `true` |
 | `TWO_FACTOR_ISSUER_NAME` | Issuer label written into TOTP authenticator app entries during 2FA setup | `NovaDrive` |

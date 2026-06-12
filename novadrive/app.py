@@ -5,7 +5,18 @@ from pathlib import Path
 
 import click
 from dotenv import load_dotenv
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import (
+    Flask,
+    flash,
+    has_request_context,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+from flask.sessions import SecureCookieSessionInterface
 from flask_login import current_user, logout_user
 from sqlalchemy import inspect, text
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -26,9 +37,28 @@ from novadrive.utils.logging import configure_logging
 load_dotenv()
 
 
+class SchemeAwareSessionInterface(SecureCookieSessionInterface):
+    """Set the session cookie ``Secure`` flag per request scheme.
+
+    A single instance can be reached over HTTPS (public domain) and plain HTTP
+    (LAN address). A static ``SESSION_COOKIE_SECURE=true`` would drop the cookie
+    over HTTP, breaking login (no session -> "CSRF session token is missing").
+    When secure cookies are enabled, only mark the cookie ``Secure`` for HTTPS
+    requests so HTTP LAN logins keep working while HTTPS stays protected.
+    """
+
+    def get_cookie_secure(self, app: Flask) -> bool:
+        if not app.config.get("SESSION_COOKIE_SECURE", False):
+            return False
+        if has_request_context():
+            return request.is_secure
+        return True
+
+
 def create_app(config_object: type[Config] | None = None) -> Flask:
     app = Flask(__name__, instance_relative_config=False)
     app.config.from_object(config_object or Config)
+    app.session_interface = SchemeAwareSessionInterface()
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
     Path(app.config["INSTANCE_DIR"]).mkdir(parents=True, exist_ok=True)
     _ensure_database_storage_path(app)
