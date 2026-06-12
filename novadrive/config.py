@@ -443,3 +443,11 @@ class Config:
         True,
     )
 
+    # Debrid service to unrestrict file-host links (WorkUpload, MediaFire, and
+    # hundreds more) into a direct URL the downloader can fetch. Without this,
+    # Cloudflare-protected hosts like WorkUpload cannot be downloaded server-side.
+    REMOTE_DOWNLOAD_DEBRID_PROVIDER = (
+        os.getenv("REMOTE_DOWNLOAD_DEBRID_PROVIDER", "").strip().lower()
+    )  # "realdebrid" | "alldebrid" | ""
+    REMOTE_DOWNLOAD_DEBRID_API_KEY = os.getenv("REMOTE_DOWNLOAD_DEBRID_API_KEY", "").strip()
+

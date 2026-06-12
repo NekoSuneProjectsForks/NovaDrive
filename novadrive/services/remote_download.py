@@ -33,7 +33,7 @@ import requests
 
 from novadrive.extensions import db
 from novadrive.models import File, Folder, RemoteDownload, User, utcnow
-from novadrive.services import aria2_downloader
+from novadrive.services import aria2_downloader, debrid
 from novadrive.services.aria2_downloader import Aria2Canceled, Aria2Error
 from novadrive.services.auth_service import AuthService
 from novadrive.services.file_service import AccessError, FileService
@@ -154,6 +154,32 @@ def enqueue(user: User, folder: Folder, url: str, config) -> RemoteDownload:
         raise RemoteDownloadError(
             "This download type needs aria2c, which isn't installed on the server."
         )
+
+    # Multi-file / archive links (e.g. WorkUpload /archive/, MediaFire /folder/)
+    # are expanded via a debrid service into one job per contained file.
+    if source_type == "http" and _is_archive_link(url):
+        if not debrid.is_configured(config):
+            raise RemoteDownloadError(
+                "Multi-file/archive links need a debrid service. Set "
+                "REMOTE_DOWNLOAD_DEBRID_PROVIDER and REMOTE_DOWNLOAD_DEBRID_API_KEY."
+            )
+        links = debrid.expand_folder(url, config)
+        if not links:
+            raise RemoteDownloadError(
+                "Could not expand that archive — the debrid service returned no files."
+            )
+        jobs = [_create_job(user, folder, link, detect_source_type(link)) for link in links]
+        db.session.commit()
+        structured_log(logger, "remote_download.queued_archive", owner_id=user.id, files=len(jobs))
+        return jobs[0]
+
+    # Cloudflare-gated hosts can't be scraped — require a debrid service.
+    if source_type == "http" and _needs_debrid(url) and not debrid.is_configured(config):
+        raise RemoteDownloadError(
+            "This host (e.g. WorkUpload) is Cloudflare-protected and needs a debrid "
+            "service. Set REMOTE_DOWNLOAD_DEBRID_PROVIDER and REMOTE_DOWNLOAD_DEBRID_API_KEY."
+        )
+
     _validate_source(
         url,
         source_type,
@@ -161,6 +187,13 @@ def enqueue(user: User, folder: Folder, url: str, config) -> RemoteDownload:
         allow_torrents=AuthService.user_can_download_torrents(user, config),
     )
 
+    job = _create_job(user, folder, url, source_type)
+    db.session.commit()
+    structured_log(logger, "remote_download.queued", job_id=job.id, owner_id=user.id)
+    return job
+
+
+def _create_job(user: User, folder: Folder, url: str, source_type: str) -> RemoteDownload:
     job = RemoteDownload(
         owner_id=user.id,
         folder_id=folder.id,
@@ -170,9 +203,23 @@ def enqueue(user: User, folder: Folder, url: str, config) -> RemoteDownload:
         status=RemoteDownload.STATUS_QUEUED,
     )
     db.session.add(job)
-    db.session.commit()
-    structured_log(logger, "remote_download.queued", job_id=job.id, owner_id=user.id)
     return job
+
+
+def _is_archive_link(url: str) -> bool:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    path = parts.path.lower()
+    if (host == "workupload.com" or host.endswith(".workupload.com")) and "/archive/" in path:
+        return True
+    if _is_mediafire(url) and "/folder/" in path:
+        return True
+    return False
+
+
+def _needs_debrid(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return host == "workupload.com" or host.endswith(".workupload.com")
 
 
 def cancel(job: RemoteDownload) -> bool:
@@ -292,7 +339,7 @@ def _run_http(config, job: RemoteDownload, user: User, folder: Folder) -> None:
     )
     response = None
     try:
-        source_url = _resolve_landing_page(job.source_url, allow_private, timeout)
+        source_url = _resolve_landing_page(job.source_url, allow_private, timeout, config)
         response = _open_source(source_url, allow_private, timeout)
         filename = _resolve_filename(source_url, response)
         content_length = response.headers.get("Content-Length")
@@ -393,13 +440,18 @@ def _is_mediafire(url: str) -> bool:
     return host == "mediafire.com" or host.endswith(".mediafire.com")
 
 
-def _resolve_landing_page(url: str, allow_private: bool, timeout: tuple[int, int]) -> str:
-    """Resolve a known landing-page host to its direct download URL.
+def _resolve_landing_page(url: str, allow_private: bool, timeout: tuple[int, int], config) -> str:
+    """Resolve a host/landing-page link to a direct download URL.
 
-    Plain HTTP downloads of e.g. a MediaFire page would just grab the HTML, so
-    sites that gate the file behind a page are scraped for the real link here.
-    Unknown hosts are returned unchanged.
+    A configured debrid service is tried first (covers Cloudflare-gated hosts
+    like WorkUpload, plus hundreds of others). Otherwise MediaFire pages are
+    scraped for the direct link. Unknown hosts are returned unchanged.
     """
+    if debrid.is_configured(config):
+        direct = debrid.unrestrict(url, config)
+        if direct:
+            _validate_host(direct, allow_private)
+            return direct
     if _is_mediafire(url):
         return _resolve_mediafire(url, allow_private, timeout)
     return url
