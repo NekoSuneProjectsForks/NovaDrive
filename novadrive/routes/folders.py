@@ -84,7 +84,9 @@ def move(folder_id: int):
 @login_required
 def delete(folder_id: int):
     parent_id = request.form.get("parent_id", type=int)
-    hard_delete = request.form.get("hard_delete") == "true"
+    # Delete frees the underlying storage objects by default; pass
+    # hard_delete=false explicitly for a soft (index-only) delete.
+    hard_delete = request.form.get("hard_delete", "true").lower() != "false"
     shared_drive_id = request.form.get("shared_drive_id", type=int)
     try:
         folder = FileService.get_folder_or_404(current_user, folder_id)

@@ -53,6 +53,53 @@ def _parse_shortener_providers(raw: str | None) -> list[dict[str, str]]:
     return providers
 
 
+def _parse_upload_providers(raw: str | None) -> list[dict]:
+    """Parse EXTERNAL_UPLOAD_PROVIDERS JSON into a normalised provider list.
+
+    Each entry: {"name", "method" (PUT|POST), "url" (template with {filename}),
+    "field" (multipart field for POST), "result" ("text"|"json:a.b"|"regex:..."),
+    "max_size" (bytes, 0=unlimited), "headers" (dict)}.
+    """
+    if not raw or not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+
+    providers: list[dict] = []
+    seen: set[str] = set()
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        if not name or not url:
+            continue
+        provider_id = _slug(name)
+        base, counter = provider_id, 2
+        while provider_id in seen:
+            provider_id = f"{base}{counter}"
+            counter += 1
+        seen.add(provider_id)
+        headers = entry.get("headers")
+        providers.append(
+            {
+                "id": provider_id,
+                "name": name,
+                "method": str(entry.get("method") or "POST").strip().upper(),
+                "url": url,
+                "field": str(entry.get("field") or "file").strip(),
+                "result": str(entry.get("result") or "text").strip(),
+                "max_size": int(entry.get("max_size") or 0),
+                "headers": headers if isinstance(headers, dict) else {},
+            }
+        )
+    return providers
+
+
 def _as_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
@@ -340,6 +387,13 @@ class Config:
     SHORTENER_PUBLIC_ENABLED = _as_bool(os.getenv("SHORTENER_PUBLIC_ENABLED"), True)
     SHORTENER_BITLY_TOKEN = os.getenv("SHORTENER_BITLY_TOKEN", "").strip()
     SHORTENER_PROVIDERS = _parse_shortener_providers(os.getenv("SHORTENER_PROVIDERS"))
+
+    # Upload a stored file to a temporary third-party host (workupload-style).
+    # Runs as a background job so multi-GB uploads don't block the request.
+    EXTERNAL_UPLOAD_ENABLED = _as_bool(os.getenv("EXTERNAL_UPLOAD_ENABLED"), True)
+    EXTERNAL_UPLOAD_WORKERS = max(1, _as_int(os.getenv("EXTERNAL_UPLOAD_WORKERS"), 1))
+    EXTERNAL_UPLOAD_TIMEOUT_SECONDS = _as_int(os.getenv("EXTERNAL_UPLOAD_TIMEOUT_SECONDS"), 1800)
+    EXTERNAL_UPLOAD_PROVIDERS = _parse_upload_providers(os.getenv("EXTERNAL_UPLOAD_PROVIDERS"))
 
     # Master switch for in-process background threads (download workers +
     # one-time S3 consolidation). Disable for one-off CLI invocations.

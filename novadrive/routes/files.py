@@ -14,7 +14,9 @@ from flask import (
 from flask_login import current_user, login_required
 
 from novadrive.forms import ShareLinkForm
-from novadrive.models import ShareLink
+from novadrive.models import ExternalUpload, ShareLink
+from novadrive.services import external_upload
+from novadrive.services.external_upload import ExternalUploadError
 from novadrive.services.file_delivery import FileDeliveryService
 from novadrive.services.file_service import AccessError, FileService
 from novadrive.services.share_service import ShareService
@@ -128,6 +130,10 @@ def details(file_id: int):
         text_preview=text_preview,
         current_shared_drive=current_shared_drive,
         can_write_file=can_write_file,
+        external_upload_enabled=current_app.config["EXTERNAL_UPLOAD_ENABLED"],
+        external_upload_providers=external_upload.providers_for_file(
+            current_app.config, file_record.total_size
+        ),
         admin_target_user=file_record.owner
         if current_user.is_admin and current_shared_drive is None and file_record.owner_id != current_user.id
         else None,
@@ -221,7 +227,9 @@ def move(file_id: int):
 def delete(file_id: int):
     redirect_folder_id = request.form.get("folder_id", type=int)
     admin_user_id = request.form.get("admin_user_id", type=int)
-    hard_delete = request.form.get("hard_delete") == "true"
+    # Delete frees the underlying storage object by default; pass
+    # hard_delete=false explicitly for a soft (index-only) delete.
+    hard_delete = request.form.get("hard_delete", "true").lower() != "false"
     shared_drive_id = request.form.get("shared_drive_id", type=int)
     try:
         file_record = FileService.get_file_or_404(current_user, file_id)
@@ -239,6 +247,64 @@ def delete(file_id: int):
             )
         )
     return _workspace_redirect(redirect_folder_id, shared_drive_id=shared_drive_id)
+
+
+def _serialize_external(job: ExternalUpload) -> dict:
+    return {
+        "id": job.id,
+        "provider": job.provider,
+        "status": job.status,
+        "progress_bytes": job.progress_bytes,
+        "total_bytes": job.total_bytes,
+        "percent": job.percent,
+        "result_url": job.result_url,
+        "error": job.error,
+        "is_active": job.is_active,
+    }
+
+
+@files_bp.route("/<int:file_id>/external-upload", methods=["POST"])
+@login_required
+def external_upload_create(file_id: int):
+    try:
+        file_record = FileService.get_file_or_404(current_user, file_id)
+        job = external_upload.enqueue(
+            current_user, file_record, request.form.get("provider", ""), current_app.config
+        )
+        if _wants_json():
+            return jsonify({"success": True, "job": _serialize_external(job)})
+        flash("Upload to the third-party host has been queued.", "success")
+    except (LookupError, AccessError):
+        if _wants_json():
+            return jsonify({"success": False, "error": "File not found."}), 404
+        flash("File not found.", "error")
+    except (ExternalUploadError, ValidationError, ValueError) as exc:
+        if _wants_json():
+            return jsonify({"success": False, "error": str(exc)}), 400
+        flash(str(exc), "error")
+    return redirect(url_for("files.details", file_id=file_id))
+
+
+@files_bp.route("/<int:file_id>/external-uploads", methods=["GET"])
+@login_required
+def external_upload_list(file_id: int):
+    try:
+        FileService.get_file_or_404(current_user, file_id)
+    except (LookupError, AccessError):
+        return jsonify({"uploads": []}), 404
+    jobs = external_upload.list_for_file(current_user, file_id)
+    return jsonify({"uploads": [_serialize_external(job) for job in jobs]})
+
+
+@files_bp.route("/external-uploads/<int:job_id>/cancel", methods=["POST"])
+@login_required
+def external_upload_cancel(job_id: int):
+    job = ExternalUpload.query.filter_by(id=job_id, owner_id=current_user.id).first()
+    if job is not None:
+        external_upload.cancel(job)
+    if _wants_json():
+        return jsonify({"success": True})
+    return redirect(url_for("files.details", file_id=job.file_id) if job else url_for("dashboard.index"))
 
 
 @files_bp.route("/<int:file_id>/share", methods=["POST"])

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from flask import Response, request, send_file
+from flask import Response, request, stream_with_context
 
 from novadrive.models import File
 from novadrive.services.file_service import FileService
@@ -106,37 +106,38 @@ class FileDeliveryService:
         as_attachment: bool,
         download_name: str | None = None,
     ) -> Response:
-        file_stream, _ = FileService.rebuild_file(file_record, config)
+        """Stream a file to the client.
+
+        The body is streamed straight from storage rather than rebuilt to a
+        local buffer first, so large downloads start immediately and don't trip
+        reverse-proxy gateway timeouts (504). Byte-range requests are honoured.
+        """
+        total_size = int(file_record.total_size or 0)
         resolved_name = download_name or file_record.filename
         requested_range = FileDeliveryService._parse_range_header(
             request.headers.get("Range"),
-            file_record.total_size,
+            total_size,
         )
 
         if requested_range:
             start, end = requested_range
-            file_stream.seek(start)
-            response = Response(
-                file_stream.read(end - start + 1),
-                206,
-                mimetype=file_record.mime_type,
-            )
-            response.headers["Content-Range"] = f"bytes {start}-{end}/{file_record.total_size}"
-            response.headers["Content-Length"] = str(end - start + 1)
+            status_code = 206
+            content_length = end - start + 1
         else:
-            response = send_file(
-                file_stream,
-                mimetype=file_record.mime_type,
-                as_attachment=as_attachment,
-                download_name=resolved_name,
-                max_age=0,
-            )
-            response.headers["Content-Length"] = str(file_record.total_size)
+            start, end = 0, (total_size - 1 if total_size > 0 else 0)
+            status_code = 200
+            content_length = total_size
 
-        disposition = "attachment" if as_attachment else "inline"
+        body = stream_with_context(
+            FileService.iter_file_content(file_record, config, start, end)
+        )
+        response = Response(body, status_code, mimetype=file_record.mime_type)
+        response.headers["Content-Length"] = str(content_length)
         response.headers["Accept-Ranges"] = "bytes"
+        disposition = "attachment" if as_attachment else "inline"
         response.headers["Content-Disposition"] = f'{disposition}; filename="{resolved_name}"'
-        response.call_on_close(file_stream.close)
+        if status_code == 206:
+            response.headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
         return response
 
     @staticmethod

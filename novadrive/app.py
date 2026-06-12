@@ -87,9 +87,10 @@ def _start_background_jobs(app: Flask) -> None:
 
     import threading
 
-    from novadrive.services import remote_download
+    from novadrive.services import external_upload, remote_download
 
     remote_download.start_workers(app)
+    external_upload.start_workers(app)
 
     if (
         app.config.get("STORAGE_CONSOLIDATE_ON_STARTUP", True)

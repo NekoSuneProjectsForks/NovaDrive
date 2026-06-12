@@ -278,6 +278,41 @@ class S3StorageBackend:
             )
             raise StorageBackendError("Object download from S3 failed.") from exc
 
+    def iter_object(
+        self,
+        channel_id: str | int,
+        message_id: str | int,
+        start: int | None = None,
+        end: int | None = None,
+        chunk_size: int = 1024 * 1024,
+    ):
+        """Yield an S3 object's bytes, optionally a byte range, without buffering.
+
+        Used for streaming downloads so the client receives the first bytes
+        immediately (no full-file server-side buffering that trips proxy 504s).
+        """
+        bucket_name = str(channel_id or self.bucket_name)
+        object_key = str(message_id)
+        params: dict[str, Any] = {"Bucket": bucket_name, "Key": object_key}
+        if start is not None and end is not None and end >= start:
+            params["Range"] = f"bytes={start}-{end}"
+        try:
+            response = self.client.get_object(**params)
+            body = response["Body"]
+            for chunk in body.iter_chunks(chunk_size=chunk_size):
+                if chunk:
+                    yield chunk
+        except (BotoCoreError, ClientError) as exc:
+            structured_log(
+                logger,
+                "storage.object_stream_failed",
+                backend="s3",
+                bucket_name=bucket_name,
+                object_key=object_key,
+                error=str(exc),
+            )
+            raise StorageBackendError("Object streaming from S3 failed.") from exc
+
     def _build_object_key(self, filename: str, sha256: str, metadata: dict[str, Any]) -> str:
         """Lay objects out as ``<prefix>/files/<username>/<folder path>/<filename>``.
 

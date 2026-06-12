@@ -12,6 +12,7 @@ import logging
 from novadrive.extensions import db
 from novadrive.models import (
     ActivityLog,
+    ExternalUpload,
     File,
     Folder,
     ObsOverlaySettings,
@@ -139,6 +140,7 @@ class AdminService:
         UserSession.query.filter_by(user_id=target_id).delete(synchronize_session=False)
         ObsOverlaySettings.query.filter_by(user_id=target_id).delete(synchronize_session=False)
         RemoteDownload.query.filter_by(owner_id=target_id).delete(synchronize_session=False)
+        ExternalUpload.query.filter_by(owner_id=target_id).delete(synchronize_session=False)
         ShortUrl.query.filter_by(owner_id=target_id).delete(synchronize_session=False)
 
         # Preserve the audit trail but detach it from the deleted user.

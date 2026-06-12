@@ -12,7 +12,17 @@ from flask import current_app, has_request_context, request
 from sqlalchemy import func
 
 from novadrive.extensions import db
-from novadrive.models import File, FileChunk, FileManifest, Folder, SharedDrive, User, utcnow
+from novadrive.models import (
+    ExternalUpload,
+    File,
+    FileChunk,
+    FileManifest,
+    Folder,
+    ShareLink,
+    SharedDrive,
+    User,
+    utcnow,
+)
 from novadrive.services.activity_service import ActivityService
 from novadrive.services.auth_service import AuthService
 from novadrive.services.shared_drive_service import SharedDriveService
@@ -700,6 +710,64 @@ class FileService:
         return 1
 
     @staticmethod
+    def iter_file_content(file_record: File, config, start: int = 0, end: int | None = None):
+        """Stream a file's bytes (optionally a byte range) for delivery.
+
+        Yields directly from storage so the client gets the first bytes right
+        away — unlike :meth:`rebuild_file`, nothing is buffered to disk first.
+        Range requests are satisfied per-chunk (and via a native S3 range GET
+        for single-object files).
+        """
+        if file_record.upload_status != "complete" or file_record.is_deleted:
+            raise ValidationError("This file is not available for download.")
+
+        total_size = int(file_record.total_size or 0)
+        if total_size <= 0:
+            return
+        if end is None or end >= total_size:
+            end = total_size - 1
+        if start < 0 or start > end:
+            return
+
+        chunk_records = (
+            FileChunk.query.filter_by(file_id=file_record.id)
+            .order_by(FileChunk.chunk_index.asc())
+            .all()
+        )
+        backend_name = (
+            file_record.manifest.storage_backend
+            if file_record.manifest and file_record.manifest.storage_backend
+            else configured_storage_backend_name(config)
+        )
+        backend = get_storage_backend(config, backend_name=backend_name)
+
+        whole_file = getattr(backend, "whole_file", False) and len(chunk_records) == 1
+        if whole_file and hasattr(backend, "iter_object"):
+            chunk = chunk_records[0]
+            yield from backend.iter_object(
+                chunk.discord_channel_id, chunk.discord_message_id, start, end
+            )
+            return
+
+        offset = 0
+        for chunk in chunk_records:
+            chunk_len = int(chunk.chunk_size or 0)
+            chunk_start = offset
+            chunk_end = offset + chunk_len - 1
+            offset += chunk_len
+            if chunk_end < start:
+                continue
+            if chunk_start > end:
+                break
+            data = backend.fetch_chunk(
+                channel_id=chunk.discord_channel_id,
+                message_id=chunk.discord_message_id,
+            )
+            slice_start = start - chunk_start if start > chunk_start else 0
+            slice_end = (end - chunk_start + 1) if end < chunk_end else chunk_len
+            yield data[slice_start:slice_end]
+
+    @staticmethod
     def rebuild_file(file_record: File, config) -> tuple[BinaryIO, str]:
         if file_record.upload_status != "complete" or file_record.is_deleted:
             raise ValidationError("This file is not available for download.")
@@ -810,6 +878,7 @@ class FileService:
     @staticmethod
     def delete_file(user: User, file_record: File, hard_delete: bool = False) -> None:
         FileService._ensure_can_write_file(user, file_record)
+        file_id = file_record.id
         if hard_delete:
             backend_name = (
                 file_record.manifest.storage_backend
@@ -826,6 +895,9 @@ class FileService:
                         chunk.id,
                         file_record.id,
                     )
+            # Rows that reference the file via a NOT NULL FK must go first.
+            ShareLink.query.filter_by(file_id=file_id).delete(synchronize_session=False)
+            ExternalUpload.query.filter_by(file_id=file_id).delete(synchronize_session=False)
             db.session.delete(file_record)
         else:
             file_record.deleted_at = utcnow()
@@ -834,7 +906,7 @@ class FileService:
         ActivityService.log(
             action="file.deleted",
             target_type="file",
-            target_id=file_record.id,
+            target_id=file_id,
             user_id=user.id,
             metadata={"hard_delete": hard_delete},
         )

@@ -178,6 +178,28 @@
         </div>
       </div>
 
+      {% if external_upload_enabled %}
+      <div class="nova-panel p-6" data-extupload data-list-url="{{ url_for('files.external_upload_list', file_id=file.id) }}" data-csrf="{{ csrf_token() }}">
+        <p class="text-xs uppercase tracking-[0.28em] text-fuchsia-200/70">Send to third party</p>
+        <h3 class="mt-2 text-xl font-semibold text-white">Upload to a temp host</h3>
+        <p class="mt-2 text-sm text-slate-400">Copy this file to an external temporary host and get a shareable link.</p>
+        {% if external_upload_providers %}
+          <form action="{{ url_for('files.external_upload_create', file_id=file.id) }}" method="post" class="mt-4 flex flex-col gap-3 sm:flex-row" data-extupload-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <select name="provider" class="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white focus:border-fuchsia-400/50 focus:outline-none">
+              {% for provider in external_upload_providers %}
+                <option value="{{ provider.id }}">{{ provider.name }}{% if provider.max_size %} (max {{ provider.max_size|filesize }}){% endif %}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="nova-button-primary">Upload</button>
+          </form>
+        {% else %}
+          <p class="mt-4 text-sm text-amber-200">No configured host accepts a file this size{% if not external_upload_providers %} (or none are configured){% endif %}.</p>
+        {% endif %}
+        <div class="mt-5 space-y-2" data-extupload-list></div>
+      </div>
+      {% endif %}
+
       <div class="nova-panel p-6">
         <p class="text-xs uppercase tracking-[0.28em] text-rose-200/70">Danger Zone</p>
         <p class="mt-3 text-sm leading-7 text-slate-400">Delete the file from the active drive view. Hard deletion also removes the stored chunk objects behind this manifest.</p>
@@ -190,11 +212,97 @@
           {% if admin_target_user %}
             <input type="hidden" name="admin_user_id" value="{{ admin_target_user.id }}">
           {% endif %}
-          <button type="submit" class="w-full rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm font-medium text-rose-100 transition hover:bg-rose-500/20" data-confirm-submit data-confirm-title="Delete {{ file.filename }}?" data-confirm-body="This will remove the file from the active drive index." {% if current_shared_drive and not can_write_file %}disabled{% endif %}>Soft Delete</button>
+          <button type="submit" name="hard_delete" value="false" class="w-full rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm font-medium text-rose-100 transition hover:bg-rose-500/20" data-confirm-submit data-confirm-title="Soft delete {{ file.filename }}?" data-confirm-body="This removes the file from the drive index but keeps the stored object. Use Hard Delete to also free storage." {% if current_shared_drive and not can_write_file %}disabled{% endif %}>Soft Delete</button>
           <button type="submit" name="hard_delete" value="true" class="w-full rounded-2xl border border-rose-400/20 bg-transparent px-4 py-3 text-sm font-medium text-rose-200 transition hover:bg-rose-500/10" data-confirm-submit data-confirm-title="Hard delete {{ file.filename }}?" data-confirm-body="This will permanently delete the database record and stored chunk objects." {% if current_shared_drive and not can_write_file %}disabled{% endif %}>Hard Delete</button>
         </form>
       </div>
     </div>
   </section>
 </div>
+
+<script>
+(function () {
+  const panel = document.querySelector('[data-extupload]');
+  if (!panel) return;
+  const listUrl = panel.dataset.listUrl;
+  const csrf = panel.dataset.csrf;
+  const listEl = panel.querySelector('[data-extupload-list]');
+  const form = panel.querySelector('[data-extupload-form]');
+
+  function fmtBytes(v) {
+    if (!v && v !== 0) return '';
+    const u = ['B','KB','MB','GB','TB']; let s = Number(v), i = 0;
+    while (s >= 1024 && i < u.length - 1) { s /= 1024; i++; }
+    return (i ? s.toFixed(1) : s) + ' ' + u[i];
+  }
+
+  function row(job) {
+    const wrap = document.createElement('div');
+    wrap.className = 'rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm';
+    const top = document.createElement('div');
+    top.className = 'flex items-center justify-between gap-3';
+    const name = document.createElement('span');
+    name.className = 'text-slate-200';
+    name.textContent = job.provider;
+    top.appendChild(name);
+    const status = document.createElement('span');
+    status.className = 'text-xs ' + (job.status === 'completed' ? 'text-emerald-300' : job.status === 'failed' ? 'text-rose-300' : job.status === 'canceled' ? 'text-amber-200' : 'text-fuchsia-200');
+    status.textContent = job.status;
+    top.appendChild(status);
+    wrap.appendChild(top);
+
+    if (job.is_active) {
+      const shell = document.createElement('div');
+      shell.className = 'mt-2 h-1.5 overflow-hidden rounded-full bg-white/10';
+      const bar = document.createElement('div');
+      bar.className = 'h-1.5 rounded-full bg-gradient-to-r from-fuchsia-500 to-violet-500';
+      bar.style.width = (job.percent || 0) + '%';
+      shell.appendChild(bar); wrap.appendChild(shell);
+      const meta = document.createElement('div');
+      meta.className = 'mt-2 flex items-center justify-between text-xs text-slate-400';
+      const prog = document.createElement('span');
+      prog.textContent = fmtBytes(job.progress_bytes) + (job.total_bytes ? ' / ' + fmtBytes(job.total_bytes) : '');
+      meta.appendChild(prog);
+      const cancel = document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'text-amber-200 hover:text-amber-100'; cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => {
+        fetch('/files/external-uploads/' + job.id + '/cancel', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrf } }).then(poll);
+      });
+      meta.appendChild(cancel); wrap.appendChild(meta);
+    } else if (job.status === 'completed' && job.result_url) {
+      const a = document.createElement('a');
+      a.className = 'mt-2 block break-all text-xs text-emerald-300 hover:text-emerald-200';
+      a.href = job.result_url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = job.result_url;
+      wrap.appendChild(a);
+    } else if (job.error) {
+      const e = document.createElement('p');
+      e.className = 'mt-2 text-xs text-rose-300'; e.textContent = job.error;
+      wrap.appendChild(e);
+    }
+    return wrap;
+  }
+
+  function poll() {
+    fetch(listUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((data) => {
+        listEl.textContent = '';
+        (data.uploads || []).forEach((j) => listEl.appendChild(row(j)));
+      }).catch(() => {});
+  }
+
+  if (form) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      fetch(form.action, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrf }, body: new FormData(form) })
+        .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => { if (ok && d.success) poll(); else alert((d && d.error) || 'Could not queue the upload.'); })
+        .catch(() => alert('Could not queue the upload.'));
+    });
+  }
+
+  poll();
+  setInterval(() => { if (!document.hidden) poll(); }, 3000);
+})();
+</script>
 {% endblock %}
