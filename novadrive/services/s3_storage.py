@@ -279,13 +279,34 @@ class S3StorageBackend:
             raise StorageBackendError("Object download from S3 failed.") from exc
 
     def _build_object_key(self, filename: str, sha256: str, metadata: dict[str, Any]) -> str:
-        file_id = metadata.get("file_id", "file")
-        chunk_index = int(metadata.get("chunk_index", 0))
+        """Lay objects out as ``<prefix>/files/<username>/<folder path>/<filename>``.
+
+        The real filename and the owner's folder hierarchy are used so the bucket
+        mirrors the drive instead of opaque ``files/<id>/`` buckets. Falls back to
+        a chunk-indexed name for multi-part (non whole-file) uploads.
+        """
         prefix = f"{self.prefix}/" if self.prefix else ""
-        return (
-            f"{prefix}files/{file_id}/"
-            f"{chunk_index:06d}-{sha256[:12]}-{filename}"
-        )
+        username = self._key_segment(metadata.get("username") or "unknown")
+        real_name = self._key_segment(metadata.get("filename") or filename)
+        chunk_index = int(metadata.get("chunk_index", 0))
+
+        folder_path = str(metadata.get("folder_path") or "")
+        segments = [self._key_segment(part) for part in folder_path.split("/") if part.strip()]
+
+        base = f"{prefix}files/{username}/"
+        if segments:
+            base += "/".join(segments) + "/"
+        if chunk_index:
+            # Multi-part objects keep a chunk suffix to stay unique.
+            return f"{base}{chunk_index:06d}-{real_name}"
+        return f"{base}{real_name}"
+
+    @staticmethod
+    def _key_segment(value: Any) -> str:
+        """Sanitise one S3 key path segment (no separators or control chars)."""
+        text = str(value).strip().replace("\\", "/").replace("/", "_")
+        text = "".join(ch for ch in text if ch.isprintable()).strip()
+        return text or "_"
 
     @staticmethod
     def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, str]:

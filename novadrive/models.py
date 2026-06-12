@@ -403,3 +403,26 @@ class RemoteDownload(TimestampMixin, db.Model):
             return 0
         return min(100, int((self.progress_bytes / self.total_bytes) * 100))
 
+
+class ShortUrl(TimestampMixin, db.Model):
+    """A short link served from this domain that redirects to a target URL."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    code = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    # What /u/<code> redirects to. For an external "proxy" provider this is the
+    # provider's (possibly ad-monetised) short link; ``final_url`` keeps the real
+    # destination for display.
+    target_url = db.Column(db.Text, nullable=False)
+    final_url = db.Column(db.Text, nullable=True)
+    provider = db.Column(db.String(32), nullable=False, default="native")
+    click_count = db.Column(db.Integer, nullable=False, default=0)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    last_click_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    owner = db.relationship("User")
+
+    @property
+    def destination(self) -> str:
+        return self.final_url or self.target_url
+

@@ -482,6 +482,14 @@
             {% if config.EMAIL_VERIFICATION_REQUIRED %}
               <p class="mt-2 text-amber-200">Email verification is still required before WebDAV access is allowed.</p>
             {% endif %}
+            <details class="mt-3">
+              <summary class="cursor-pointer text-xs uppercase tracking-[0.22em] text-fuchsia-200/70">Mapping on Windows fails?</summary>
+              <p class="mt-2 text-xs leading-6 text-slate-400">
+                Windows blocks Basic auth over plain HTTP. Over a LAN IP, run this once in an elevated PowerShell, then map again:
+              </p>
+              <code class="mt-2 block break-all rounded-xl bg-black/40 px-3 py-2 text-xs text-emerald-200">Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters' -Name BasicAuthLevel -Value 2; net stop WebClient; net start WebClient</code>
+              <p class="mt-2 text-xs leading-6 text-slate-400">Serving NovaDrive over HTTPS avoids this entirely.</p>
+            </details>
           </div>
 
           {% if generated_webdav_password %}

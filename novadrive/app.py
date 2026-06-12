@@ -132,6 +132,7 @@ def _register_blueprints(app: Flask) -> None:
     from novadrive.routes.dashboard import dashboard_bp
     from novadrive.routes.files import files_bp
     from novadrive.routes.folders import folders_bp
+    from novadrive.routes.links import links_bp, shorturl_bp
     from novadrive.routes.overlay import overlay_bp
     from novadrive.routes.remote import remote_bp
     from novadrive.routes.share import share_bp
@@ -145,6 +146,8 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(folders_bp)
     app.register_blueprint(overlay_bp)
     app.register_blueprint(remote_bp)
+    app.register_blueprint(links_bp)
+    app.register_blueprint(shorturl_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(share_bp)
     app.register_blueprint(shared_drives_bp)

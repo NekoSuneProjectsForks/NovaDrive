@@ -23,6 +23,7 @@ from novadrive.services.file_delivery import FileDeliveryService
 from novadrive.services.file_service import AccessError, FileService
 from novadrive.services.overlay_service import OverlayService
 from novadrive.services.share_service import ShareService
+from novadrive.services.short_url_service import ShortUrlService
 from novadrive.services.storage_base import StorageBackendError
 from novadrive.utils.chunking import ChunkValidationError
 from novadrive.utils.urls import external_url
@@ -125,6 +126,68 @@ def sharex_config():
         "ErrorMessage": "{json:error}",
     }
     filename = f"novadrive-{current_user.username}.sxcu"
+    return Response(
+        json.dumps(payload, indent=2),
+        mimetype="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@api_bp.post("/sharex/shorten")
+@csrf.exempt
+def sharex_shorten():
+    user = _authenticate_api_request()
+    if not user:
+        return jsonify({"success": False, "error": "Invalid or missing API key."}), 401
+
+    target_url = (
+        request.values.get("url")
+        or request.values.get("input")
+        or request.values.get("text")
+    )
+    if target_url is None and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        target_url = payload.get("url") or payload.get("input") or payload.get("text")
+
+    provider = request.values.get("provider") or None
+    try:
+        short_url = ShortUrlService.create(user, target_url or "", provider=provider)
+        link = external_url("shorturl.redirect", code=short_url.code)
+        return jsonify({"success": True, "url": link, "result_url": link, "shorturl": link}), 201
+    except (ValidationError, ValueError) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception:
+        current_app.logger.exception("ShareX URL shorten failed.")
+        return jsonify({"success": False, "error": "Could not shorten that URL."}), 500
+
+
+@api_bp.get("/sharex/shortener.sxcu")
+@login_required
+def sharex_shortener_config():
+    api_key = session.get("nova_generated_api_key")
+    if not api_key:
+        api_key = AuthService.generate_api_key(current_user)
+        session["nova_generated_api_key"] = api_key
+
+    payload = {
+        "Version": "17.0.0",
+        "Name": f"NovaDrive Shortener ({current_user.username})",
+        "DestinationType": "URLShortener",
+        "RequestMethod": "POST",
+        "RequestURL": external_url("api.sharex_shorten"),
+        "Headers": {
+            "X-NovaDrive-API-Key": api_key,
+        },
+        "Body": "MultipartFormData",
+        "Arguments": {
+            "url": "{input}",
+        },
+        "URL": "{json:url}",
+        "ErrorMessage": "{json:error}",
+    }
+    filename = f"novadrive-shortener-{current_user.username}.sxcu"
     return Response(
         json.dumps(payload, indent=2),
         mimetype="application/json",

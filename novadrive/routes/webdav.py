@@ -38,11 +38,18 @@ def _dav_capability_headers(response: Response) -> Response:
     response.headers["DAV"] = "1, 2"
     response.headers["MS-Author-Via"] = "DAV"
     response.headers["Allow"] = ", ".join(DAV_METHODS)
+    response.headers["Public"] = ", ".join(DAV_METHODS)
+    # The Windows "Add Network Location" wizard refuses servers that look like a
+    # generic site; advertising the WebDAV server name keeps it happy.
+    response.headers.setdefault("Server", "NovaDrive-WebDAV/1.0")
     return response
 
 
-@webdav_bp.route("/", defaults={"resource_path": ""}, methods=DAV_METHODS)
-@webdav_bp.route("/<path:resource_path>", methods=DAV_METHODS)
+# strict_slashes=False so both /dav and /dav/ resolve without a 308 redirect —
+# the Windows WebDAV redirector does not follow those redirects and reports the
+# location as "not valid".
+@webdav_bp.route("/", defaults={"resource_path": ""}, methods=DAV_METHODS, strict_slashes=False)
+@webdav_bp.route("/<path:resource_path>", methods=DAV_METHODS, strict_slashes=False)
 @csrf.exempt
 def dispatch(resource_path: str):
     if not current_app.config["WEBDAV_ENABLED"]:
@@ -52,7 +59,9 @@ def dispatch(resource_path: str):
     # sends it before offering credentials and expects a 200 with DAV headers;
     # it exposes no user data, so answer it without requiring auth.
     if request.method == "OPTIONS":
-        return _dav_capability_headers(Response(status=HTTPStatus.OK))
+        response = _dav_capability_headers(Response(status=HTTPStatus.OK))
+        response.headers["Content-Length"] = "0"
+        return response
 
     user = WebDavService.authenticate_request()
     if not user:

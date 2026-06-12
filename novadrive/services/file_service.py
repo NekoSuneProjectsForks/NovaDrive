@@ -588,11 +588,7 @@ class FileService:
                         filename=f"{file_record.id}-{chunk_index:06d}.part",
                         sha256=chunk_sha,
                         channel_id=channel_id,
-                        metadata={
-                            "file_id": file_record.id,
-                            "chunk_index": chunk_index,
-                            "filename": file_record.filename,
-                        },
+                        metadata={**FileService.storage_metadata(file_record), "chunk_index": chunk_index},
                     )
                     file_chunk = FileChunk(
                         file_id=file_record.id,
@@ -636,6 +632,27 @@ class FileService:
             spool.close()
 
     @staticmethod
+    def _folder_relative_path(folder: Folder | None) -> str:
+        """Path of ``folder`` relative to its drive root, e.g. ``Photos/2024``."""
+        parts: list[str] = []
+        node = folder
+        while node is not None and not node.is_root:
+            parts.append(node.name)
+            node = node.parent
+        return "/".join(reversed(parts))
+
+    @staticmethod
+    def storage_metadata(file_record: File) -> dict[str, object]:
+        """Locator hints passed to the storage backend (used for the S3 key)."""
+        owner = file_record.owner
+        return {
+            "file_id": file_record.id,
+            "filename": file_record.filename,
+            "username": owner.username if owner else "unknown",
+            "folder_path": FileService._folder_relative_path(file_record.folder),
+        }
+
+    @staticmethod
     def _store_whole_file(
         backend,
         file_record: File,
@@ -666,11 +683,7 @@ class FileService:
             filename=f"{file_record.id}-000000.part",
             sha256=file_record.sha256,
             channel_id=channel_id,
-            metadata={
-                "file_id": file_record.id,
-                "chunk_index": 0,
-                "filename": file_record.filename,
-            },
+            metadata={**FileService.storage_metadata(file_record), "chunk_index": 0},
         )
         file_chunk = FileChunk(
             file_id=file_record.id,

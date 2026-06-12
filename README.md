@@ -168,10 +168,32 @@ README.md                 You are here
 ### WebDAV
 
 - Basic-auth WebDAV endpoint scoped to the authenticated user's drive
-- `PROPFIND`, `GET`, `HEAD`, `PUT`, `MKCOL`, `DELETE`, `MOVE`, and `OPTIONS`
+- `PROPFIND`, `PROPPATCH`, `GET`, `HEAD`, `PUT`, `MKCOL`, `DELETE`, `MOVE`, `LOCK`, `UNLOCK`, and `OPTIONS`
 - Desktop and mobile client support using username/email plus a generated WebDAV app password
 - Works for verified multi-user accounts without exposing the global admin view
 - The bootstrap admin must complete the forced credential-change flow before WebDAV auth is allowed
+
+#### Mapping on Windows ("The folder you entered does not appear to be valid")
+
+Windows Explorer's WebDAV client (the *WebClient* service) **blocks Basic
+authentication over plain HTTP by default**, so mapping `http://host:port/dav/`
+fails with that error before it even asks for a password. Two things are needed:
+
+1. **Use the WebDAV app password, not your account password.** Generate it from
+   the dashboard (it is shown once) and sign in with your username + that app
+   password.
+2. **Allow Basic auth over HTTP** (only needed for non-HTTPS, e.g. a LAN IP).
+   In an elevated PowerShell:
+
+   ```powershell
+   Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters' -Name BasicAuthLevel -Value 2
+   net stop WebClient; net start WebClient
+   ```
+
+   Then map the drive again. Serving NovaDrive over **HTTPS** avoids this
+   registry change entirely (Windows allows Basic auth over TLS by default).
+   NovaDrive already answers `/dav` and `/dav/` without a redirect and advertises
+   the DAV/lock capabilities Windows probes for.
 
 ### ShareX uploads
 
@@ -421,7 +443,7 @@ Recommended bot permissions:
 | `S3_SECRET_ACCESS_KEY` | S3 secret access key | `...` |
 | `S3_SESSION_TOKEN` | Optional temporary session token | `...` |
 | `S3_BUCKET_NAME` | Bucket used for NovaDrive chunk objects | `novadrive-prod` |
-| `S3_PREFIX` | Optional object key prefix under the bucket | `novadrive` |
+| `S3_PREFIX` | Optional object key prefix under the bucket. Objects are stored as `<prefix>/files/<username>/<folder path>/<filename>`; leave empty to avoid a doubled path when the bucket is already named `novadrive`. | _(empty)_ |
 | `S3_FORCE_PATH_STYLE` | Force path-style requests for MinIO/self-hosted setups | `true` |
 | `S3_PRESIGN_TTL_SECONDS` | Reserved S3 URL lifetime setting for future integrations | `900` |
 | `EMAIL_VERIFICATION_REQUIRED` | Require email confirmation before password login | `true` |

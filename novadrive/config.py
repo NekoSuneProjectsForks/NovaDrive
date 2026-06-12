@@ -1,9 +1,56 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+
+def _slug(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum()) or "provider"
+
+
+def _parse_shortener_providers(raw: str | None) -> list[dict[str, str]]:
+    """Parse SHORTENER_PROVIDERS JSON into a normalised provider list.
+
+    Each entry: {"name", "url" (template with {url}/{key}), "key", "result"}.
+    Invalid JSON or entries are skipped so a typo never breaks startup.
+    """
+    if not raw or not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+
+    providers: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        if not name or not url:
+            continue
+        provider_id = _slug(name)
+        base, counter = provider_id, 2
+        while provider_id in seen:
+            provider_id = f"{base}{counter}"
+            counter += 1
+        seen.add(provider_id)
+        providers.append(
+            {
+                "id": provider_id,
+                "name": name,
+                "url": url,
+                "key": str(entry.get("key") or "").strip(),
+                "result": str(entry.get("result") or "").strip(),
+            }
+        )
+    return providers
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -208,7 +255,9 @@ class Config:
     S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY", "").strip()
     S3_SESSION_TOKEN = os.getenv("S3_SESSION_TOKEN", "").strip()
     S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "").strip()
-    S3_PREFIX = os.getenv("S3_PREFIX", "novadrive").strip().strip("/")
+    # Default empty so objects are stored as files/<username>/... without a
+    # redundant prefix (set S3_PREFIX to nest under a sub-path if desired).
+    S3_PREFIX = os.getenv("S3_PREFIX", "").strip().strip("/")
     S3_FORCE_PATH_STYLE = _as_bool(os.getenv("S3_FORCE_PATH_STYLE"), True)
     S3_PRESIGN_TTL_SECONDS = _as_int(os.getenv("S3_PRESIGN_TTL_SECONDS"), 900)
 
@@ -283,6 +332,14 @@ class Config:
 
     SHARE_TOKEN_BYTES = _as_int(os.getenv("SHARE_TOKEN_BYTES"), 24)
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+    # URL shortener. Native links are always available. Public no-key providers
+    # (is.gd, TinyURL) can be toggled and Bitly is offered when its token is set.
+    # Ad/community shorteners are a single configurable list (token + URL
+    # mapping) defined in SHORTENER_PROVIDERS; users pick from that list.
+    SHORTENER_PUBLIC_ENABLED = _as_bool(os.getenv("SHORTENER_PUBLIC_ENABLED"), True)
+    SHORTENER_BITLY_TOKEN = os.getenv("SHORTENER_BITLY_TOKEN", "").strip()
+    SHORTENER_PROVIDERS = _parse_shortener_providers(os.getenv("SHORTENER_PROVIDERS"))
 
     # Master switch for in-process background threads (download workers +
     # one-time S3 consolidation). Disable for one-off CLI invocations.

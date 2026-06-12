@@ -105,11 +105,7 @@ def _consolidate_one(config, backend, file_id: int) -> bool:
             filename=f"{file_record.id}-000000.part",
             sha256=file_record.sha256,
             channel_id=channel_id,
-            metadata={
-                "file_id": file_record.id,
-                "chunk_index": 0,
-                "filename": file_record.filename,
-            },
+            metadata={**FileService.storage_metadata(file_record), "chunk_index": 0},
         )
         new_message_id = str(payload["message_id"])
 

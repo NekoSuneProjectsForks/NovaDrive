@@ -20,6 +20,7 @@ from novadrive.models import (
     SharedDrive,
     SharedDriveJoinRequest,
     SharedDriveMember,
+    ShortUrl,
     User,
     UserSession,
 )
@@ -138,6 +139,7 @@ class AdminService:
         UserSession.query.filter_by(user_id=target_id).delete(synchronize_session=False)
         ObsOverlaySettings.query.filter_by(user_id=target_id).delete(synchronize_session=False)
         RemoteDownload.query.filter_by(owner_id=target_id).delete(synchronize_session=False)
+        ShortUrl.query.filter_by(owner_id=target_id).delete(synchronize_session=False)
 
         # Preserve the audit trail but detach it from the deleted user.
         ActivityLog.query.filter_by(user_id=target_id).update(
