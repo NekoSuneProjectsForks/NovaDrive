@@ -187,7 +187,12 @@ def _process_job(config, job_id: int) -> None:
         response = _send(provider, request_url, filename, file_record.sha256 or "", reader, timeout)
         response.raise_for_status()
         result_spec = provider.get("result") or "text"
-        link = request_url if result_spec == "requesturl" else _parse_result(result_spec, response)
+        if provider.get("type") == "pixeldrain":
+            link = _pixeldrain_link(response)
+        elif result_spec == "requesturl":
+            link = request_url
+        else:
+            link = _parse_result(result_spec, response)
         if not link:
             raise ExternalUploadError(f"{provider['name']} did not return a download link.")
         _finish(job_id, ExternalUpload.STATUS_COMPLETED, result_url=link, progress_bytes=total)
@@ -221,6 +226,8 @@ def _resolve_headers(provider: dict, filename: str, file_sha: str) -> dict:
 def _send(provider: dict, url: str, filename: str, file_sha: str, reader, timeout):
     if provider.get("type") == "gofile":
         return _send_gofile(provider, filename, reader, timeout)
+    if provider.get("type") == "pixeldrain":
+        return _send_pixeldrain(provider, filename, reader, timeout)
 
     headers = _resolve_headers(provider, filename, file_sha)
     if provider.get("method") == "PUT":
@@ -231,17 +238,51 @@ def _send(provider: dict, url: str, filename: str, file_sha: str, reader, timeou
         headers.setdefault("Content-Length", str(len(reader)))
         return requests.post(url, data=reader, headers=headers, timeout=timeout)
 
-    return _post_multipart(url, provider.get("field") or "file", filename, reader, headers, timeout)
+    return _post_multipart(
+        url, provider.get("field") or "file", filename, reader, headers, timeout, provider.get("fields")
+    )
 
 
-def _post_multipart(url, field, filename, reader, headers, timeout):
+def _post_multipart(url, field, filename, reader, headers, timeout, extra_fields=None):
     if MultipartEncoder is not None:
-        encoder = MultipartEncoder(fields={field: (filename, reader, "application/octet-stream")})
+        fields = {key: str(value) for key, value in (extra_fields or {}).items()}
+        fields[field] = (filename, reader, "application/octet-stream")
+        encoder = MultipartEncoder(fields=fields)
         headers = dict(headers)
         headers["Content-Type"] = encoder.content_type
         return requests.post(url, data=encoder, headers=headers, timeout=timeout)
     # Fallback: requests streams a file-like multipart part from the reader.
-    return requests.post(url, files={field: (filename, reader, "application/octet-stream")}, headers=headers, timeout=timeout)
+    return requests.post(
+        url,
+        data={key: str(value) for key, value in (extra_fields or {}).items()},
+        files={field: (filename, reader, "application/octet-stream")},
+        headers=headers,
+        timeout=timeout,
+    )
+
+
+def _send_pixeldrain(provider: dict, filename: str, reader, timeout):
+    """Pixeldrain: PUT the file with API-key Basic auth (empty username)."""
+    import base64
+
+    key = provider.get("key")
+    if not key:
+        raise ExternalUploadError("Pixeldrain needs an API key (set \"key\").")
+    token = base64.b64encode(f":{key}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {token}",
+        "Content-Length": str(len(reader)),
+    }
+    url = f"https://pixeldrain.com/api/file/{quote(filename, safe='')}"
+    return requests.put(url, data=reader, headers=headers, timeout=timeout)
+
+
+def _pixeldrain_link(response: requests.Response) -> str | None:
+    try:
+        file_id = (response.json() or {}).get("id")
+    except ValueError:
+        return None
+    return f"https://pixeldrain.com/u/{file_id}" if file_id else None
 
 
 def _send_gofile(provider: dict, filename: str, reader, timeout):

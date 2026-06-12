@@ -88,6 +88,7 @@ def _parse_upload_providers(raw: str | None) -> list[dict]:
             counter += 1
         seen.add(provider_id)
         headers = entry.get("headers")
+        fields = entry.get("fields")
         default_result = "json:data.downloadPage" if provider_type == "gofile" else "text"
         providers.append(
             {
@@ -96,11 +97,13 @@ def _parse_upload_providers(raw: str | None) -> list[dict]:
                 "type": provider_type,
                 "method": str(entry.get("method") or "POST").strip().upper(),
                 "url": url,
+                "key": str(entry.get("key") or "").strip(),
                 "field": str(entry.get("field") or "file").strip(),
                 "result": str(entry.get("result") or default_result).strip(),
                 "raw": bool(entry.get("raw")),
                 "max_size": int(entry.get("max_size") or 0),
                 "headers": {str(k): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {},
+                "fields": {str(k): str(v) for k, v in fields.items()} if isinstance(fields, dict) else {},
             }
         )
     return providers
