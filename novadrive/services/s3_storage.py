@@ -313,6 +313,39 @@ class S3StorageBackend:
             )
             raise StorageBackendError("Object streaming from S3 failed.") from exc
 
+    def open_object(
+        self,
+        channel_id: str | int,
+        message_id: str | int,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> tuple[Any, int]:
+        """Eagerly open an S3 object (optionally a range) for streaming.
+
+        Returns ``(streaming_body, content_length)``. Opening here (rather than
+        lazily mid-stream) lets a missing-key/error surface to the request
+        handler as a graceful 500 instead of crashing the WSGI server, and gives
+        the object's true length so the response Content-Length always matches.
+        """
+        bucket_name = str(channel_id or self.bucket_name)
+        object_key = str(message_id)
+        params: dict[str, Any] = {"Bucket": bucket_name, "Key": object_key}
+        if start is not None and end is not None and end >= start:
+            params["Range"] = f"bytes={start}-{end}"
+        try:
+            response = self.client.get_object(**params)
+        except (BotoCoreError, ClientError) as exc:
+            structured_log(
+                logger,
+                "storage.object_open_failed",
+                backend="s3",
+                bucket_name=bucket_name,
+                object_key=object_key,
+                error=str(exc),
+            )
+            raise StorageBackendError("Object download from S3 failed.") from exc
+        return response["Body"], int(response.get("ContentLength") or 0)
+
     def _build_object_key(self, filename: str, sha256: str, metadata: dict[str, Any]) -> str:
         """Lay objects out as ``<prefix>/files/<username>/<folder path>/<filename>``.
 

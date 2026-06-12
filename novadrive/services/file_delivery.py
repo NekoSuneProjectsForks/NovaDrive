@@ -122,16 +122,15 @@ class FileDeliveryService:
         if requested_range:
             start, end = requested_range
             status_code = 206
-            content_length = end - start + 1
         else:
-            start, end = 0, (total_size - 1 if total_size > 0 else 0)
+            start, end = None, None
             status_code = 200
-            content_length = total_size
 
-        body = stream_with_context(
-            FileService.iter_file_content(file_record, config, start, end)
+        # Eager open: a storage error raises here (graceful 500), not mid-stream.
+        iterator, content_length = FileService.open_download(file_record, config, start, end)
+        response = Response(
+            stream_with_context(iterator), status_code, mimetype=file_record.mime_type
         )
-        response = Response(body, status_code, mimetype=file_record.mime_type)
         response.headers["Content-Length"] = str(content_length)
         response.headers["Accept-Ranges"] = "bytes"
         disposition = "attachment" if as_attachment else "inline"

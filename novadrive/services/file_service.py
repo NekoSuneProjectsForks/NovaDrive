@@ -710,24 +710,22 @@ class FileService:
         return 1
 
     @staticmethod
-    def iter_file_content(file_record: File, config, start: int = 0, end: int | None = None):
-        """Stream a file's bytes (optionally a byte range) for delivery.
+    def open_download(file_record: File, config, start: int | None = None, end: int | None = None):
+        """Open a file for streaming delivery.
 
-        Yields directly from storage so the client gets the first bytes right
-        away — unlike :meth:`rebuild_file`, nothing is buffered to disk first.
-        Range requests are satisfied per-chunk (and via a native S3 range GET
-        for single-object files).
+        Returns ``(iterator, content_length)``. The first storage access happens
+        eagerly here so a missing object / backend error surfaces to the request
+        handler (graceful 500) instead of crashing mid-stream in the WSGI
+        server. ``start``/``end`` are ``None`` for a full download, or the
+        inclusive byte range for a partial request.
         """
         if file_record.upload_status != "complete" or file_record.is_deleted:
             raise ValidationError("This file is not available for download.")
 
         total_size = int(file_record.total_size or 0)
-        if total_size <= 0:
-            return
-        if end is None or end >= total_size:
-            end = total_size - 1
-        if start < 0 or start > end:
-            return
+        is_range = start is not None
+        if not is_range:
+            start, end = 0, max(total_size - 1, 0)
 
         chunk_records = (
             FileChunk.query.filter_by(file_id=file_record.id)
@@ -741,14 +739,42 @@ class FileService:
         )
         backend = get_storage_backend(config, backend_name=backend_name)
 
-        whole_file = getattr(backend, "whole_file", False) and len(chunk_records) == 1
-        if whole_file and hasattr(backend, "iter_object"):
-            chunk = chunk_records[0]
-            yield from backend.iter_object(
-                chunk.discord_channel_id, chunk.discord_message_id, start, end
-            )
-            return
+        if total_size <= 0:
+            return iter(()), 0
 
+        whole_file = getattr(backend, "whole_file", False) and len(chunk_records) == 1
+        if whole_file and hasattr(backend, "open_object"):
+            chunk = chunk_records[0]
+            body, length = backend.open_object(
+                chunk.discord_channel_id,
+                chunk.discord_message_id,
+                start if is_range else None,
+                end if is_range else None,
+            )
+
+            def _stream_body():
+                for piece in body.iter_chunks(chunk_size=1024 * 1024):
+                    if piece:
+                        yield piece
+
+            return _stream_body(), (length or (end - start + 1))
+
+        # Per-chunk path (Discord / legacy multi-chunk S3). Prime the first chunk
+        # eagerly so a fetch error surfaces before we start the response.
+        generator = FileService._iter_chunks_range(backend, chunk_records, start, end)
+        try:
+            first_piece = next(generator)
+        except StopIteration:
+            return iter(()), 0
+
+        def _primed():
+            yield first_piece
+            yield from generator
+
+        return _primed(), (end - start + 1)
+
+    @staticmethod
+    def _iter_chunks_range(backend, chunk_records, start: int, end: int):
         offset = 0
         for chunk in chunk_records:
             chunk_len = int(chunk.chunk_size or 0)

@@ -330,7 +330,8 @@ class _Canceled(Exception):
 
 class _StorageReader:
     def __init__(self, file_record: File, config, total: int, job_id: int):
-        self._gen = FileService.iter_file_content(file_record, config)
+        iterator, _ = FileService.open_download(file_record, config)
+        self._gen = iterator
         self._buffer = b""
         self._eof = False
         self._total = total
