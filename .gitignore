@@ -3,4 +3,5 @@
 __pycache__/
 *.pyc
 instance/*.db
+instance/secret_key
 node_modules/

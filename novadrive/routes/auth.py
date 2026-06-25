@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import secrets
 from datetime import timedelta
+from urllib.parse import urlparse
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
-from novadrive.extensions import db
+from novadrive.extensions import db, limiter
 from novadrive.models import User, as_utc, utcnow
 from novadrive.forms import (
     DefaultAdminSetupForm,
@@ -28,6 +29,7 @@ TWO_FACTOR_LOGIN_SESSION_KEYS = ("nova_2fa_user_id", "nova_2fa_remember", "nova_
 
 
 @auth_bp.route("/register", methods=["GET", "POST"])
+@limiter.limit("10 per hour", methods=["POST"])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard.index"))
@@ -78,6 +80,7 @@ def register():
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute; 60 per hour", methods=["POST"])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard.index"))
@@ -117,6 +120,7 @@ def login():
 
 
 @auth_bp.route("/forgot-password", methods=["GET", "POST"])
+@limiter.limit("5 per minute; 20 per hour", methods=["POST"])
 def forgot_password():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard.index"))
@@ -148,6 +152,7 @@ def forgot_password():
 
 
 @auth_bp.route("/reset-password/<token>", methods=["GET", "POST"])
+@limiter.limit("10 per minute; 40 per hour", methods=["POST"])
 def reset_password(token: str):
     if current_user.is_authenticated and not AuthService.must_change_password(current_user):
         return redirect(url_for("dashboard.index"))
@@ -184,6 +189,7 @@ def reset_password(token: str):
 
 
 @auth_bp.route("/login/two-factor", methods=["GET", "POST"])
+@limiter.limit("10 per minute; 60 per hour", methods=["POST"])
 def two_factor_login():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard.index"))
@@ -413,6 +419,7 @@ def verify_email(token: str):
 
 
 @auth_bp.route("/resend-verification", methods=["POST"])
+@limiter.limit("5 per minute; 20 per hour", methods=["POST"])
 def resend_verification():
     email = (request.form.get("email") or "").strip().lower()
     if current_user.is_authenticated and not email:
@@ -422,31 +429,26 @@ def resend_verification():
         flash("Enter the email address that needs a verification link.", "error")
         return redirect(url_for("auth.login"))
 
+    # A single neutral message for every branch below so the response never
+    # reveals whether the address belongs to a real (and verified) account.
+    neutral_message = "If that account exists and needs confirmation, a new verification email has been sent."
+
     user = AuthService.find_by_email(email)
-    if not user:
-        flash("If that account exists, a new verification email has been sent.", "success")
-        return redirect(url_for("auth.login", email=email))
+    if (
+        user
+        and not user.is_email_verified
+        and current_app.config["EMAIL_VERIFICATION_REQUIRED"]
+    ):
+        last_sent_at = as_utc(user.email_verification_sent_at)
+        resend_interval = current_app.config["EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS"]
+        if not last_sent_at or last_sent_at + timedelta(seconds=resend_interval) <= utcnow():
+            try:
+                _send_verification_email(user)
+            except EmailDeliveryError:
+                pass
 
-    if user.is_email_verified:
-        flash("That email address is already verified.", "success")
-        return redirect(url_for("auth.login", email=user.email))
-
-    if not current_app.config["EMAIL_VERIFICATION_REQUIRED"]:
-        flash("Email verification is not required in this deployment.", "info")
-        return redirect(url_for("auth.login", email=user.email))
-
-    last_sent_at = as_utc(user.email_verification_sent_at)
-    resend_interval = current_app.config["EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS"]
-    if last_sent_at and last_sent_at + timedelta(seconds=resend_interval) > utcnow():
-        flash("Wait a moment before requesting another verification email.", "error")
-        return redirect(url_for("auth.login", email=user.email))
-
-    try:
-        _send_verification_email(user)
-        flash("Verification email sent.", "success")
-    except EmailDeliveryError as exc:
-        flash(str(exc), "error")
-    return redirect(url_for("auth.login", email=user.email))
+    flash(neutral_message, "success")
+    return redirect(url_for("auth.login", email=email))
 
 
 def _send_verification_email(user: User) -> None:
@@ -493,7 +495,21 @@ def _complete_login(user: User, *, remember: bool, next_target: str | None):
         flash("An administrator requires this account to set a new password before continuing.", "error")
         return redirect(url_for("auth.force_password_change"))
     flash("Welcome back to NovaDrive.", "success")
-    return redirect(next_target or url_for("dashboard.index"))
+    return redirect(_safe_next(next_target) or url_for("dashboard.index"))
+
+
+def _safe_next(target: str | None) -> str | None:
+    """Allow only same-site relative redirect targets (blocks open redirect)."""
+    if not target:
+        return None
+    if any(ch in target for ch in ("\\", "\n", "\r", "\t")):
+        return None
+    parsed = urlparse(target)
+    if parsed.scheme or parsed.netloc:
+        return None
+    if not target.startswith("/") or target.startswith("//"):
+        return None
+    return target
 
 
 def _store_pending_two_factor_login(
