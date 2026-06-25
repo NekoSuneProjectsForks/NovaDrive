@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import secrets
 from datetime import timedelta
 from pathlib import Path
 
@@ -22,7 +24,7 @@ from sqlalchemy import inspect, text
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from novadrive.config import Config
-from novadrive.extensions import csrf, db, login_manager, migrate
+from novadrive.extensions import csrf, db, limiter, login_manager, migrate
 from novadrive.models import User
 from novadrive.services.auth_service import AuthService
 from novadrive.services.storage_factory import (
@@ -61,6 +63,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app.session_interface = SchemeAwareSessionInterface()
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
     Path(app.config["INSTANCE_DIR"]).mkdir(parents=True, exist_ok=True)
+    _ensure_secret_key(app)
     _ensure_database_storage_path(app)
     app.permanent_session_lifetime = timedelta(
         hours=app.config["PERMANENT_SESSION_LIFETIME_HOURS"]
@@ -78,6 +81,59 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     _register_cli(app)
     _start_background_jobs(app)
     return app
+
+
+# The historical hardcoded fallback. Anyone who knows it can forge session
+# cookies AND password-reset / email-verification tokens (all signed with
+# SECRET_KEY), so it must never be used in a live deployment.
+_INSECURE_SECRET_KEYS = frozenset({"", "change-me-in-production", "secret", "changeme"})
+
+
+def _ensure_secret_key(app: Flask) -> None:
+    """Guarantee a strong, non-default SECRET_KEY.
+
+    Priority: an explicit (non-default) SECRET_KEY from the environment/config is
+    always honoured. Otherwise a random key is generated once and persisted to
+    ``instance/secret_key`` so the app never silently runs on the public default
+    (which would allow full account takeover via forged cookies/tokens).
+    """
+    current = (app.config.get("SECRET_KEY") or "").strip()
+    if current and current not in _INSECURE_SECRET_KEYS:
+        return
+
+    key_file = Path(app.config["INSTANCE_DIR"]) / "secret_key"
+    try:
+        if key_file.exists():
+            stored = key_file.read_text(encoding="utf-8").strip()
+            if stored and stored not in _INSECURE_SECRET_KEYS:
+                app.config["SECRET_KEY"] = stored
+                app.logger.warning(
+                    "SECRET_KEY env var not set; using the persisted random key at %s. "
+                    "For multi-process/clustered deployments set SECRET_KEY explicitly.",
+                    key_file,
+                )
+                return
+    except OSError:
+        pass
+
+    generated = secrets.token_urlsafe(64)
+    app.config["SECRET_KEY"] = generated
+    try:
+        key_file.write_text(generated, encoding="utf-8")
+        try:
+            os.chmod(key_file, 0o600)
+        except OSError:
+            pass
+        app.logger.warning(
+            "SECRET_KEY env var not set; generated a random key and saved it to %s. "
+            "Set SECRET_KEY in the environment for multi-process deployments.",
+            key_file,
+        )
+    except OSError:
+        app.logger.warning(
+            "SECRET_KEY env var not set and the key file could not be written; "
+            "using an ephemeral key. All sessions will reset on restart. Set SECRET_KEY."
+        )
 
 
 def _start_background_jobs(app: Flask) -> None:
@@ -117,6 +173,7 @@ def _init_extensions(app: Flask) -> None:
     migrate.init_app(app, db)
     login_manager.init_app(app)
     csrf.init_app(app)
+    limiter.init_app(app)
 
 
 _sqlite_pragmas_registered = False
@@ -366,6 +423,20 @@ def _register_template_helpers(app: Flask) -> None:
 
 
 def _register_request_guards(app: Flask) -> None:
+    @app.after_request
+    def set_security_headers(response):
+        # Defense-in-depth headers. Use setdefault so any view that needs a
+        # different value (e.g. an embeddable overlay) can override it.
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        if request.is_secure:
+            response.headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains",
+            )
+        return response
+
     @app.before_request
     def enforce_active_user_session():
         if not current_user.is_authenticated:
@@ -454,6 +525,16 @@ def _register_error_handlers(app: Flask) -> None:
             )
         if wants_json_error():
             return jsonify({"success": False, "error": message}), 413
+        flash(message, "error")
+        if current_user.is_authenticated:
+            return redirect(url_for("dashboard.index"))
+        return redirect(url_for("auth.login"))
+
+    @app.errorhandler(429)
+    def too_many_requests(error):
+        message = "Too many attempts. Wait a moment and try again."
+        if wants_json_error():
+            return jsonify({"success": False, "error": message}), 429
         flash(message, "error")
         if current_user.is_authenticated:
             return redirect(url_for("dashboard.index"))

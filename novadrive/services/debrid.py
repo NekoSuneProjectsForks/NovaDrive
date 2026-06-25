@@ -66,7 +66,11 @@ def expand_folder(url: str, config) -> list[str]:
         links = response.json()
     except (requests.RequestException, ValueError):
         return []
-    return [link for link in links if isinstance(link, str) and link.startswith("http")]
+    return [
+        link
+        for link in links
+        if isinstance(link, str) and (link.startswith("http://") or link.startswith("https://"))
+    ]
 
 
 def _realdebrid_unrestrict(url: str, key: str) -> str | None:

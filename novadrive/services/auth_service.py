@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 from datetime import timedelta
 
 import pyotp
 from flask import current_app, has_app_context
 from sqlalchemy import func, or_
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from novadrive.extensions import db
 from novadrive.models import ActivityLog, Folder, User, UserSession, as_utc, utcnow
 from novadrive.services.activity_service import ActivityService
+
+
+# Precomputed hash used to equalise the work done for a nonexistent login so an
+# attacker cannot distinguish "no such user" from "wrong password" via timing.
+_DUMMY_PASSWORD_HASH = generate_password_hash("nova-timing-equalizer-not-a-real-password")
 
 
 class AuthService:
@@ -84,7 +91,12 @@ class AuthService:
     @staticmethod
     def authenticate(login: str, password: str, *, record_login: bool = True) -> User | None:
         user = AuthService.find_by_login(login)
-        if user and user.check_password(password):
+        if not user:
+            # Perform an equivalent hash check against a dummy so the response
+            # time does not reveal whether the account exists.
+            check_password_hash(_DUMMY_PASSWORD_HASH, password or "")
+            return None
+        if user.check_password(password):
             if record_login:
                 user.last_login_at = utcnow()
                 db.session.commit()
@@ -414,7 +426,7 @@ class AuthService:
             return None
 
         digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
-        if user.webdav_password_hash != digest:
+        if not hmac.compare_digest(user.webdav_password_hash or "", digest):
             return None
         return user
 

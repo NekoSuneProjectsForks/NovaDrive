@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import io
 import json
 import logging
@@ -137,9 +138,15 @@ bridge = BotBridge(bot)
 bridge_app = Flask("novadrive-bot-bridge")
 
 
+_DEFAULT_BRIDGE_SECRET = "novadrive-local-secret"
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
 @bridge_app.before_request
 def validate_bridge_secret():
-    if request.headers.get("X-NovaDrive-Bridge-Secret") != Config.DISCORD_BOT_BRIDGE_SHARED_SECRET:
+    provided = request.headers.get("X-NovaDrive-Bridge-Secret", "")
+    expected = Config.DISCORD_BOT_BRIDGE_SHARED_SECRET or ""
+    if not hmac.compare_digest(provided, expected):
         return jsonify({"ok": False, "error": "Unauthorized"}), HTTPStatus.UNAUTHORIZED
 
 
@@ -209,6 +216,14 @@ def run_bridge_server() -> None:
     parsed = urlparse(Config.DISCORD_BOT_BRIDGE_URL)
     host = parsed.hostname or "127.0.0.1"
     port = parsed.port or 5051
+    # The bridge grants full control over Discord-backed storage, gated only by
+    # the shared secret. Refuse to expose it beyond loopback while that secret is
+    # still the public default — otherwise anyone on the network owns storage.
+    if host not in _LOOPBACK_HOSTS and Config.DISCORD_BOT_BRIDGE_SHARED_SECRET == _DEFAULT_BRIDGE_SECRET:
+        raise RuntimeError(
+            "Refusing to bind the Discord bridge to a non-loopback host while "
+            "DISCORD_BOT_BRIDGE_SHARED_SECRET is the default. Set a strong secret first."
+        )
     structured_log(
         logger,
         "bridge.starting",

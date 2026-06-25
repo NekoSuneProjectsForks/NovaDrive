@@ -168,7 +168,21 @@ def enqueue(user: User, folder: Folder, url: str, config) -> RemoteDownload:
             raise RemoteDownloadError(
                 "Could not expand that archive — the debrid service returned no files."
             )
-        jobs = [_create_job(user, folder, link, detect_source_type(link)) for link in links]
+        allow_private = bool(config.get("REMOTE_DOWNLOAD_ALLOW_PRIVATE_HOSTS"))
+        allow_torrents = AuthService.user_can_download_torrents(user, config)
+        jobs = []
+        for link in links:
+            # Links come back from the debrid API derived from user input — apply
+            # the same SSRF/torrent-permission validation as a single URL before
+            # queuing each one.
+            link_type = detect_source_type(link)
+            _validate_source(
+                link,
+                link_type,
+                allow_private=allow_private,
+                allow_torrents=allow_torrents,
+            )
+            jobs.append(_create_job(user, folder, link, link_type))
         db.session.commit()
         structured_log(logger, "remote_download.queued_archive", owner_id=user.id, files=len(jobs))
         return jobs[0]
@@ -471,7 +485,11 @@ def _resolve_mediafire(page_url: str, allow_private: bool, timeout: tuple[int, i
     # Newer pages expose the link directly on the download button.
     match = re.search(r'href="(https://download[^"]+?\.mediafire\.com/[^"]+)"', html)
     if match:
-        return match.group(1).replace("&amp;", "&")
+        direct = match.group(1).replace("&amp;", "&")
+        # The scraped page is untrusted content; re-validate before returning so
+        # a spoofed/poisoned response can't point us at an internal address.
+        _validate_public_url(direct, allow_private)
+        return direct
     # Older/obfuscated pages base64-encode it in data-scrambled-url.
     match = re.search(r'data-scrambled-url="([^"]+)"', html)
     if match:
@@ -480,7 +498,9 @@ def _resolve_mediafire(page_url: str, allow_private: bool, timeout: tuple[int, i
         except (ValueError, binascii.Error):
             decoded = ""
         if decoded.startswith("http"):
-            return decoded.replace("&amp;", "&")
+            direct = decoded.replace("&amp;", "&")
+            _validate_public_url(direct, allow_private)
+            return direct
     raise RemoteDownloadError(
         "Could not find a download link on that MediaFire page "
         "(it may require a captcha, be a folder, or have been removed)."
